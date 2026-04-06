@@ -1,3 +1,24 @@
+Metadata-Version: 2.4
+Name: github-ai-inference
+Version: 0.1.1
+Summary: Serverless AI inference via GitHub Actions — no server required
+Author: Tanish Chauhan
+License: MIT
+Project-URL: Homepage, https://github.com/TanishC4444/github-ai
+Project-URL: Repository, https://github.com/TanishC4444/github-ai
+Keywords: ai,llm,inference,github-actions,llama,serverless
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: requests>=2.28
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file
+
 # github-ai
 
 [![PyPI version](https://badge.fury.io/py/github-ai.svg)](https://badge.fury.io/py/github-ai)
