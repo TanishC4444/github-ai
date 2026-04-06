@@ -1,12 +1,12 @@
-# github-ai
+# gh-ai-runner
 
-[![PyPI version](https://badge.fury.io/py/github-ai.svg)](https://badge.fury.io/py/github-ai)
+[![PyPI version](https://badge.fury.io/py/gh-ai-runner.svg)](https://badge.fury.io/py/gh-ai-runner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 **Serverless AI inference via GitHub Actions. No server. No GPU. No infrastructure.**
 
-Run open-source LLMs directly through GitHub's free CI/CD runners — just a GitHub token and a prompt. `github-ai` handles everything else: repo creation, workflow setup, model downloading, caching, and output retrieval.
+Run open-source LLMs directly through GitHub's free CI/CD runners — just a GitHub token and a prompt. `gh-ai-runner` handles everything else: repo creation, workflow setup, model downloading, caching, and output retrieval.
 
 Built by [Tanish Chauhan](https://github.com/TanishC4444)
 
@@ -30,7 +30,7 @@ No server is ever running between calls. Each call spins up a fresh GitHub Actio
 
 ## Install
 ```bash
-pip install github-ai
+pip install gh-ai-runner==0.1.3
 ```
 
 **Requirements:**
@@ -42,7 +42,7 @@ pip install github-ai
 
 ## Quickstart
 ```python
-from github_ai import ai_call
+from gh_ai_runner import ai_call
 
 result = ai_call(
     github_token="ghp_...",
@@ -52,7 +52,7 @@ result = ai_call(
 print(result)
 ```
 
-That's it. On first run, `github-ai` will:
+That's it. On first run, `gh-ai-runner` will:
 - Create a repo called `ai-inference-runner` on your GitHub account
 - Set up the workflow automatically
 - Download and cache TinyLlama 1.1B (~0.6 GB)
@@ -65,7 +65,7 @@ Subsequent calls reuse the cached repo and model.
 
 **Basic question**
 ```python
-from github_ai import ai_call
+from gh_ai_runner import ai_call
 
 result = ai_call(
     github_token="ghp_...",
@@ -121,7 +121,7 @@ print(result)
 
 **Multiple calls in sequence**
 ```python
-from github_ai import ai_call
+from gh_ai_runner import ai_call
 
 TOKEN = "ghp_..."
 
@@ -139,7 +139,7 @@ for q in questions:
 **Parallel calls (use separate repo per call)**
 ```python
 import threading
-from github_ai import ai_call
+from gh_ai_runner import ai_call
 
 TOKEN = "ghp_..."
 results = {}
