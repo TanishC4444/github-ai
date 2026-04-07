@@ -1,134 +1,198 @@
-# gh-ai-runner
+# github-ai
 
-[![PyPI version](https://badge.fury.io/py/gh-ai-runner.svg)](https://badge.fury.io/py/gh-ai-runner)
+[![PyPI version](https://badge.fury.io/py/github-ai.svg)](https://badge.fury.io/py/github-ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub Actions](https://img.shields.io/badge/powered%20by-GitHub%20Actions-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
 
-**Serverless AI inference via GitHub Actions. No server. No GPU. No infrastructure.**
+**Run open-source LLMs for free using GitHub Actions as your compute layer.**
 
-Run open-source LLMs directly through GitHub's free CI/CD runners — just a GitHub token and a prompt. `gh-ai-runner` handles everything else: repo creation, workflow setup, model downloading, caching, and output retrieval.
+No server. No GPU. No cloud account. No API keys. Just a GitHub token and a prompt.
 
 Built by [Tanish Chauhan](https://github.com/TanishC4444)
 
 ---
 
-## How it works
+## How It Works
 
-When you call `ai_call()`:
+When you call `ai_call()`, the library does the following automatically:
 
-1. Creates a private GitHub repo (once, automatically)
-2. Commits a workflow + inference script into it
-3. Dispatches a `workflow_dispatch` GitHub Actions run
-4. The runner downloads and caches the model (GGUF quantized, ~0.6 GB)
-5. Runs inference via `llama-cpp-python`
-6. Uploads the output as an artifact
-7. Downloads and returns the output to you as a string
+```
+Step 1  Creates a repo on your GitHub account (once, on first call only)
+Step 2  Waits for the repo to become fully accessible before proceeding
+Step 3  Commits an inference script and workflow file into it
+Step 4  Dispatches a GitHub Actions workflow run with your prompt
+Step 5  A free Ubuntu runner picks up the job and downloads the model
+Step 6  The model runs inference via llama-cpp-python
+Step 7  The output is uploaded as a GitHub Actions artifact
+Step 8  The library downloads the artifact and returns it to you as a string
+```
 
-No server is ever running between calls. Each call spins up a fresh GitHub Actions runner, runs inference, and shuts down.
+The runner spins up fresh for each call and shuts down immediately after. Nothing runs between calls — there is no server, no idle cost, and no infrastructure to maintain.
 
 ---
 
 ## Install
+
 ```bash
-pip install gh-ai-runner==0.1.3
+pip install github-ai
 ```
 
-**Requirements:**
-- Python 3.9+
-- A GitHub account with a personal access token (PAT)
-- Token scopes needed: `repo`, `workflow`
+Requirements: Python 3.9+, a GitHub account.
+
+---
+
+## Getting Your GitHub Token
+
+You need a **Personal Access Token (PAT)** with repo and workflow permissions.
+
+### Step-by-step
+
+1. Go to [github.com](https://github.com) and sign in
+2. Click your **profile picture** (top right) → **Settings**
+3. Scroll to the bottom of the left sidebar → click **Developer settings**
+4. Click **Personal access tokens** → **Tokens (classic)**
+5. Click **Generate new token** → **Generate new token (classic)**
+6. Give it a name, e.g. `github-ai`
+7. Set an expiration (90 days recommended)
+8. Check exactly these two scopes:
+   - ✅ `repo` — full control of repositories
+   - ✅ `workflow` — update GitHub Actions workflows
+9. Scroll to the bottom → click **Generate token**
+10. **Copy the token immediately** — GitHub only shows it once
+
+Your token starts with `ghp_`. Treat it like a password.
+
+### Store it as an environment variable (recommended)
+
+```bash
+# Mac / Linux — add to ~/.zshrc or ~/.bashrc
+export GITHUB_TOKEN="ghp_your_token_here"
+
+# Windows (PowerShell)
+$env:GITHUB_TOKEN = "ghp_your_token_here"
+```
+
+```python
+import os
+from github_ai import ai_call
+
+result = ai_call(
+    github_token=os.environ["GITHUB_TOKEN"],
+    prompt="What is a transformer model?",
+)
+```
 
 ---
 
 ## Quickstart
+
 ```python
-from gh_ai_runner import ai_call
+from github_ai import ai_call
 
 result = ai_call(
     github_token="ghp_...",
-    prompt="explain recursion in simple terms",
+    prompt="Explain recursion in simple terms.",
 )
 
 print(result)
 ```
 
-That's it. On first run, `gh-ai-runner` will:
-- Create a repo called `ai-inference-runner` on your GitHub account
-- Set up the workflow automatically
-- Download and cache TinyLlama 1.1B (~0.6 GB)
+On first run, the library will:
+- Create a repo called `ai-inference-runner` on your account
+- Wait for the repo to become fully accessible
+- Set up the inference workflow automatically
+- Download and cache the model (~0.6 GB, takes ~5 min)
 
-Subsequent calls reuse the cached repo and model.
+Every run after that uses the cached repo and model and finishes in **1–2 minutes**.
 
 ---
 
 ## Examples
 
-**Basic question**
+### Simple question
+
 ```python
-from gh_ai_runner import ai_call
+from github_ai import ai_call
 
 result = ai_call(
     github_token="ghp_...",
-    prompt="what is the difference between a list and a tuple in Python?",
+    prompt="What is the difference between TCP and UDP?",
 )
 print(result)
 ```
 
-**Custom system prompt**
+### Custom system prompt
+
 ```python
 result = ai_call(
     github_token="ghp_...",
-    prompt="explain black holes",
-    system="You are a physics professor. Be precise and use analogies.",
-    model="llama",
-    max_tokens=1024,
+    prompt="What are three ways to improve this API design?",
+    system="You are a senior backend engineer. Be direct and technical.",
 )
 print(result)
 ```
 
-**Deterministic output (temperature=0)**
+### Code generation
+
 ```python
 result = ai_call(
     github_token="ghp_...",
-    prompt="what is 144 divided by 12?",
-    temperature=0.0,
+    prompt="Write a Python function that flattens a nested list of any depth.",
+    system="You are an expert Python developer. Return only code, no explanation.",
+    temperature=0.2,
+    max_tokens=512,
+)
+print(result)
+```
+
+### Deterministic output
+
+```python
+result = ai_call(
+    github_token="ghp_...",
+    prompt="What is 144 divided by 12?",
+    temperature=0.0,   # fully deterministic — same answer every time
     max_tokens=16,
 )
-print(result)  # always returns the same answer
-```
-
-**Silent mode (no logs)**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="summarize the theory of evolution",
-    verbose=False,
-)
 print(result)
 ```
 
-**Large output**
+### Using the Llama model
+
 ```python
 result = ai_call(
     github_token="ghp_...",
-    prompt="write a detailed essay on the causes of World War I",
-    max_tokens=2048,
+    prompt="Summarize the causes of World War I.",
+    model="llama",       # better instruction following and reasoning
+    max_tokens=1024,
     temperature=0.5,
-    model="llama",
 )
 print(result)
 ```
 
-**Multiple calls in sequence**
+### Silent mode
+
 ```python
-from gh_ai_runner import ai_call
+result = ai_call(
+    github_token="ghp_...",
+    prompt="Translate 'good morning' to French, Spanish, and Japanese.",
+    verbose=False,   # no logs printed, just the result
+)
+print(result)
+```
+
+### Multiple calls in sequence
+
+```python
+from github_ai import ai_call
 
 TOKEN = "ghp_..."
 
 questions = [
-    "what is a neural network?",
-    "what is gradient descent?",
-    "what is backpropagation?",
+    "What is a neural network?",
+    "What is gradient descent?",
+    "What is backpropagation?",
 ]
 
 for q in questions:
@@ -136,10 +200,13 @@ for q in questions:
     print(f"Q: {q}\nA: {answer}\n")
 ```
 
-**Parallel calls (use separate repo per call)**
+### Parallel calls
+
+Parallel calls must use separate repos — each repo has its own independent run queue so calls never interfere with each other.
+
 ```python
 import threading
-from gh_ai_runner import ai_call
+from github_ai import ai_call
 
 TOKEN = "ghp_..."
 results = {}
@@ -152,8 +219,8 @@ def run(key, prompt, repo):
         verbose=False,
     )
 
-t1 = threading.Thread(target=run, args=("q1", "explain DNA", "runner-repo-1"))
-t2 = threading.Thread(target=run, args=("q2", "explain RNA", "runner-repo-2"))
+t1 = threading.Thread(target=run, args=("q1", "Explain DNA", "runner-repo-1"))
+t2 = threading.Thread(target=run, args=("q2", "Explain RNA", "runner-repo-2"))
 
 t1.start(); t2.start()
 t1.join();  t2.join()
@@ -162,7 +229,19 @@ print(results["q1"])
 print(results["q2"])
 ```
 
-> **Note:** Parallel calls must use different `repo_name` values. Each repo has its own independent run queue, so calls never interfere with each other.
+### Extended context window
+
+```python
+result = ai_call(
+    github_token="ghp_...",
+    prompt="Write a detailed essay on the history of the internet.",
+    model="llama",
+    max_tokens=2048,
+    n_ctx=4096,
+    temperature=0.6,
+)
+print(result)
+```
 
 ---
 
@@ -170,34 +249,115 @@ print(results["q2"])
 
 | Parameter | Type | Default | Required | Description |
 |---|---|---|---|---|
-| `github_token` | `str` | — | Yes | GitHub PAT with `repo` and `workflow` scopes |
-| `prompt` | `str` | — | Yes | The message or question to send to the model |
-| `model` | `str` | `"tinyllama"` | No | Which model to use. See Models section below |
-| `system` | `str` | `"You are a helpful assistant."` | No | System prompt that controls model behavior |
-| `max_tokens` | `int` | `512` | No | Max tokens to generate. Hard limit: 4096 |
-| `temperature` | `float` | `0.7` | No | Randomness. `0.0` = deterministic, `2.0` = very creative |
-| `cache` | `bool` | `True` | No | Cache model weights between runs. Strongly recommended |
-| `n_ctx` | `int` | `None` | No | Context window size. Defaults to model built-in. Max: 8192 |
-| `repo_name` | `str` | `"ai-inference-runner"` | No | GitHub repo to create or reuse for running inference |
-| `verbose` | `bool` | `True` | No | Print step-by-step logs. Set `False` for silent mode |
+| `github_token` | `str` | — | ✅ | GitHub PAT with `repo` and `workflow` scopes |
+| `prompt` | `str` | — | ✅ | The message or question to send to the model |
+| `model` | `str` | `"tinyllama"` | — | Which model to use — see Models section |
+| `system` | `str` | `"You are a helpful assistant."` | — | System prompt that controls model behavior |
+| `max_tokens` | `int` | `512` | — | Max tokens to generate. Hard limit: 4096 |
+| `temperature` | `float` | `0.7` | — | `0.0` = deterministic, `2.0` = highly creative |
+| `cache` | `bool` | `True` | — | Cache model weights between runs. Strongly recommended |
+| `n_ctx` | `int` | `None` | — | Context window size. Defaults to model built-in. Max: 8192 |
+| `repo_name` | `str` | `"ai-inference-runner"` | — | GitHub repo to create or reuse for running inference |
+| `verbose` | `bool` | `True` | — | Print step-by-step logs. Set `False` for silent mode |
 
 ---
 
 ## Models
 
-| Key | Model | Size | Default Context | Max Safe Context |
-|---|---|---|---|---|
-| `tinyllama` | TinyLlama 1.1B Chat Q4_K_M | 0.6 GB | 2048 tokens | 8192 tokens |
-| `llama` | Llama 3.2 1B Instruct Q4_K_M | 0.7 GB | 4096 tokens | 8192 tokens |
+| Key | Model | Size | Default Context | Max Context | Best For |
+|---|---|---|---|---|---|
+| `tinyllama` | TinyLlama 1.1B Chat Q4_K_M | 0.6 GB | 2048 tokens | 8192 tokens | Fast answers, simple tasks |
+| `llama` | Llama 3.2 1B Instruct Q4_K_M | 0.7 GB | 4096 tokens | 8192 tokens | Reasoning, longer outputs |
 
 Both models are quantized GGUF files hosted publicly on HuggingFace. No HuggingFace token required.
 
 **Which model should I use?**
-- `tinyllama` — faster, smaller, good for short factual answers and simple tasks
-- `llama` — better instruction-following, better for longer structured outputs and reasoning
+Use `tinyllama` for short factual answers and anything where speed matters. Use `llama` for structured outputs, reasoning tasks, code generation, and longer responses.
 
 ---
 
-## Context and output size
+## Timing
 
-The context window (`n_ctx`) is the total number of tokens the model can see at once — this includes your system prompt, your prompt, and the generated output combined.
+| Scenario | Approximate Time |
+|---|---|
+| First run, no cache | ~5 min (compiles llama-cpp-python + downloads model) |
+| Cached run | ~1–2 min |
+| Inference only (warm runner) | ~10–40 sec depending on output length |
+
+The first-run delay comes from compiling `llama-cpp-python` from source on the runner. This is a one-time cost per repo. All subsequent calls reuse the cached venv and model weights.
+
+---
+
+## GitHub Actions Free Tier
+
+| Resource | Free Tier |
+|---|---|
+| Minutes (public repos) | **Unlimited** |
+| Minutes (private repos) | 2,000 / month |
+| Runner RAM | 7 GB |
+| Runner CPUs | 2 vCPUs |
+| Cache storage | 10 GB per repo |
+| Concurrent jobs | Up to 20 |
+
+Keep your runner repo public and usage is entirely free with no monthly cap.
+
+---
+
+## Validation and Limits
+
+The library validates all parameters before dispatching to prevent wasted runner time:
+
+- `temperature` must be between `0.0` and `2.0`
+- `max_tokens` must be between `1` and `4096`
+- `n_ctx` must not exceed `8192` (OOM risk above this on the runner)
+- `max_tokens` must be less than `n_ctx`
+- Estimated RAM usage is checked against the 7 GB runner limit
+
+If any check fails, a `ValueError` is raised locally before anything is sent to GitHub.
+
+---
+
+## Troubleshooting
+
+**`403 Forbidden` when dispatching workflow**
+Your token is missing the `workflow` scope. Edit the token on GitHub, check the `workflow` box, and regenerate.
+
+**`Timed out waiting for workflow run to appear`**
+The runner queue was busy. Retry — GitHub Actions can delay by a minute or two during peak times.
+
+**Output is cut off mid-sentence**
+Increase `max_tokens`. Default is 512. For longer responses use 1024 or 2048.
+
+**`Workflow failed (failure)`**
+Check the Actions tab on your runner repo for the full log. Most common cause is a HuggingFace rate limit on model download — retry with `cache=True` (default) so the model only downloads once.
+
+**`model must be one of: ['tinyllama', 'llama']`**
+The `model` parameter only accepts those two exact strings. Check for typos.
+
+**VS Code doesn't recognize the import after pip install**
+Interpreter mismatch. Press `Ctrl+Shift+P` → `Python: Select Interpreter` and select the environment where you ran `pip install github-ai`. Run `pip show github-ai` in your terminal to confirm where it installed.
+
+---
+
+## Changelog
+
+### 0.1.5
+- Added repo accessibility wait on first-time creation to prevent race condition on new accounts
+- Added automatic concise response enforcement via system prompt addendum
+- Improved validation error messages
+- Full README rewrite with complete examples and token setup guide
+
+### 0.1.1
+- Initial public release
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  Built by <a href="https://github.com/TanishC4444">Tanish Chauhan</a>
+</p>

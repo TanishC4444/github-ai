@@ -65,6 +65,16 @@ def _ensure_repo(token, username, repo_name, verbose):
         "description": "GitHub AI Inference Runner",
     })
     r.raise_for_status()
+
+    _log("Waiting for repo to become accessible...", verbose=verbose)
+    for _ in range(30):
+        if _repo_exists(token, username, repo_name):
+            break
+        time.sleep(1)
+    else:
+        raise TimeoutError(f"Repo '{repo_name}' not accessible after 30 seconds.")
+
+
     time.sleep(2)
 
     _commit_file(token, username, repo_name,

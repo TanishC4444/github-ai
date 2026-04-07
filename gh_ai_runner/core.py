@@ -45,6 +45,8 @@ def ai_call(
     Raises:
         ValueError: If any parameter is out of safe range.
     """
+    system = system + " Be concise and direct. Avoid unnecessary filler."
+
     if model not in MODELS:
         raise ValueError(f"model must be one of: {list(MODELS.keys())}")
 
