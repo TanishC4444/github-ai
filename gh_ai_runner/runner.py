@@ -1,3 +1,5 @@
+import hashlib
+
 INFERENCE_SCRIPT = r'''
 import os, urllib.request, warnings
 warnings.filterwarnings("ignore")
@@ -12,6 +14,31 @@ MODEL_MAP = {
     "llama": {
         "url":      "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
         "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "n_ctx":    4096,
+    },
+
+    # ── ADD NEW MODELS BELOW THIS LINE ──────────────────────────────────────
+    # Keep in sync with MODELS in models.py
+    # ────────────────────────────────────────────────────────────────────────
+
+    "phi3": {
+        "url":      "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        "n_ctx":    4096,
+    },
+    "qwen": {
+        "url":      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "n_ctx":    4096,
+    },
+    "gemma2": {
+        "url":      "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+        "filename": "gemma-2-2b-it-Q4_K_M.gguf",
+        "n_ctx":    4096,
+    },
+    "deepseek": {
+        "url":      "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        "filename": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
         "n_ctx":    4096,
     },
 }
@@ -60,7 +87,7 @@ on:
     inputs:
       prompt:      { description: "User prompt",     required: true  }
       system:      { description: "System prompt",   required: false, default: "You are a helpful assistant." }
-      model:       { description: "tinyllama|llama", required: false, default: "tinyllama" }
+      model:       { description: "Model key",       required: false, default: "tinyllama" }
       cache:       { description: "Cache weights",   required: false, default: "true" }
       max_tokens:  { description: "Max new tokens",  required: false, default: "512" }
       temperature: { description: "Temperature",     required: false, default: "0.7" }
@@ -114,3 +141,13 @@ jobs:
           path: output.txt
           retention-days: 1
 """
+
+
+def _script_hash():
+    """SHA-256 of the inference script — used to skip unnecessary commits."""
+    return hashlib.sha256(INFERENCE_SCRIPT.encode()).hexdigest()
+
+
+def _workflow_hash():
+    """SHA-256 of the workflow YAML — used to skip unnecessary commits."""
+    return hashlib.sha256(WORKFLOW_YAML.encode()).hexdigest()

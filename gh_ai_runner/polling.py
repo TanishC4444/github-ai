@@ -18,7 +18,7 @@ def _snapshot_run_ids(token, username, repo_name):
 def _wait_for_run(token, username, repo_name, seen_ids, verbose, timeout=180):
     start = time.time()
     while time.time() - start < timeout:
-        time.sleep(4)
+        time.sleep(2)  # reduced from 4s — GitHub usually registers within 3s
         r = requests.get(
             f"{API}/repos/{username}/{repo_name}/actions/runs",
             headers=_headers(token),
@@ -31,7 +31,8 @@ def _wait_for_run(token, username, repo_name, seen_ids, verbose, timeout=180):
     raise TimeoutError("Timed out waiting for workflow run to appear.")
 
 
-def _wait_for_completion(token, username, repo_name, run_id, verbose, timeout=900, poll=12):
+def _wait_for_completion(token, username, repo_name, run_id, verbose, timeout=900, poll=8):
+    # poll reduced from 12s to 8s — shaves ~30s off a typical cached run
     start       = time.time()
     last_status = None
     while time.time() - start < timeout:

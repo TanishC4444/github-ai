@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gh-ai-runner"
-version = "0.1.5"
+version = "0.1.6"
 description = "Serverless AI inference via GitHub Actions — no server required"
 readme = "README.md"
 license = { text = "MIT" }
@@ -20,8 +20,8 @@ classifiers = [
 dependencies = ["requests>=2.28"]
 
 [project.urls]
-Homepage = "https://github.com/TanishC4444/servai"
-Repository = "https://github.com/TanishC4444/servai"
+Homepage = "https://github.com/TanishC4444/gh-ai-runner"
+Repository = "https://github.com/TanishC4444/gh-ai-runner"
 
 [project.optional-dependencies]
 dev = ["pytest"]

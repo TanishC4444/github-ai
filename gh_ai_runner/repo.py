@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import time
 
 import requests
@@ -27,6 +28,16 @@ def _repo_exists(token, username, repo_name):
     return requests.get(
         f"{API}/repos/{username}/{repo_name}", headers=_headers(token)
     ).status_code == 200
+
+
+def _get_remote_sha256(token, username, repo_name, path):
+    """Return SHA-256 of a file's content on GitHub, or None if it doesn't exist."""
+    url = f"{API}/repos/{username}/{repo_name}/contents/{path}"
+    r   = requests.get(url, headers=_headers(token))
+    if r.status_code != 200:
+        return None
+    raw = base64.b64decode(r.json()["content"].replace("\n", ""))
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _commit_file(token, username, repo_name, path, content, message):
@@ -62,19 +73,9 @@ def _ensure_repo(token, username, repo_name, verbose):
     _log("Creating repo...", verbose=verbose)
     r = requests.post(f"{API}/user/repos", headers=_headers(token), json={
         "name": repo_name, "private": False, "auto_init": True,
-        "description": "GitHub AI Inference Runner",
+        "description": "gh-ai-runner inference repo",
     })
     r.raise_for_status()
-
-    _log("Waiting for repo to become accessible...", verbose=verbose)
-    for _ in range(30):
-        if _repo_exists(token, username, repo_name):
-            break
-        time.sleep(1)
-    else:
-        raise TimeoutError(f"Repo '{repo_name}' not accessible after 30 seconds.")
-
-
     time.sleep(2)
 
     _commit_file(token, username, repo_name,
@@ -87,9 +88,28 @@ def _ensure_repo(token, username, repo_name, verbose):
 
 
 def _sync_files(token, username, repo_name, verbose):
-    _log("Syncing runner files...", verbose=verbose)
-    _commit_file(token, username, repo_name,
-                 "run_inference.py", INFERENCE_SCRIPT, "Sync inference script")
-    _commit_file(token, username, repo_name,
-                 ".github/workflows/inference.yml", WORKFLOW_YAML, "Sync workflow")
+    """Only commit files that have actually changed — skips both if already up to date."""
+    local_script_hash   = hashlib.sha256(INFERENCE_SCRIPT.encode()).hexdigest()
+    local_workflow_hash = hashlib.sha256(WORKFLOW_YAML.encode()).hexdigest()
+
+    remote_script_hash   = _get_remote_sha256(token, username, repo_name, "run_inference.py")
+    remote_workflow_hash = _get_remote_sha256(token, username, repo_name, ".github/workflows/inference.yml")
+
+    script_changed   = remote_script_hash   != local_script_hash
+    workflow_changed = remote_workflow_hash != local_workflow_hash
+
+    if not script_changed and not workflow_changed:
+        _log("Runner files up to date, skipping sync", verbose=verbose)
+        return
+
+    if script_changed:
+        _log("Syncing inference script...", verbose=verbose)
+        _commit_file(token, username, repo_name,
+                     "run_inference.py", INFERENCE_SCRIPT, "Sync inference script")
+
+    if workflow_changed:
+        _log("Syncing workflow...", verbose=verbose)
+        _commit_file(token, username, repo_name,
+                     ".github/workflows/inference.yml", WORKFLOW_YAML, "Sync workflow")
+
     _log("Runner files synced", verbose=verbose)
