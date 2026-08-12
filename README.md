@@ -1,40 +1,45 @@
+<div align="center">
+<img src="https://images.unsplash.com/photo-1780253256194-34e5867ccb8c?auto=format&fit=crop&w=1800&h=600&q=82" alt="A Python package orchestrating repository setup, cloud inference, and artifact retrieval" width="100%" />
+<sub>Real photography by <a href="https://unsplash.com/photos/developer-typing-code-on-a-laptop-screen-xaWYIbNIOdw">Alicia Christin Gerald on Unsplash</a>.</sub>
+
 # gh-ai-runner
+### Use GitHub Actions as an ephemeral inference backend—straight from Python.
 
-[![PyPI version](https://badge.fury.io/py/gh-ai-runner.svg)](https://badge.fury.io/py/gh-ai-runner)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/gh-ai-runner?style=flat-square&logo=pypi&logoColor=white)](https://pypi.org/project/gh-ai-runner/)
+![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Models](https://img.shields.io/badge/GGUF_Models-6-7C3AED?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-D4A72C?style=flat-square)
 
-**Serverless AI inference via GitHub Actions. No server. No GPU. No infrastructure.**
-
-Run open-source LLMs directly through GitHub's free CI/CD runners — just a GitHub token and a prompt. `gh-ai-runner` handles everything else: repo creation, workflow setup, model downloading, caching, and output retrieval.
-
-Built by [Tanish Chauhan](https://github.com/TanishC4444)
-
----
-
-## What's new in 0.1.16
-
-- **5 models** — added Phi-3.5 Mini, Qwen 2.5 1.5B, Gemma 2 2B, and DeepSeek-R1 1.5B
-- **Smart sync** — runner files are only committed when their content actually changes, saving 10-20s per call
-- **Faster polling** — run detection reduced from 4s to 2s, completion polling from 12s to 8s
+[How it works](#how-it-works) · [Install](#install) · [Models](#models) · [API](#api-reference)
+</div>
 
 ---
+
+## Overview
+
+`gh-ai-runner` is a Python orchestration package that turns a GitHub repository into an on-demand open-model inference service. A single `ai_call()` verifies or creates the runner repository, synchronizes its inference script and workflow by content hash, dispatches GitHub Actions, waits for the matching run, downloads the output artifact, and returns the generated text.
+
+No inference server remains online between calls. GitHub supplies the temporary runner; `llama-cpp-python` executes quantized GGUF weights on CPU.
 
 ## How it works
 
-When you call `ai_call()`:
+```mermaid
+sequenceDiagram
+    participant App as Python application
+    participant API as GitHub API
+    participant Repo as Runner repository
+    participant Job as Actions runner
 
-1. Creates a GitHub repo (once, automatically)
-2. Commits a workflow + inference script — only if they've changed
-3. Dispatches a `workflow_dispatch` GitHub Actions run
-4. The runner downloads and caches the model (GGUF quantized)
-5. Runs inference via `llama-cpp-python`
-6. Uploads the output as an artifact
-7. Downloads and returns the output to you as a string
-
-No server is ever running between calls. Each call spins up a fresh GitHub Actions runner, runs inference, and shuts down.
-
----
+    App->>API: Resolve authenticated username
+    App->>Repo: Create or reuse repository
+    App->>Repo: Sync workflow/script when hashes differ
+    App->>API: Snapshot runs + dispatch workflow
+    API->>Job: Start ephemeral Ubuntu worker
+    Job->>Job: Restore/download GGUF + run llama.cpp
+    Job->>API: Upload output artifact
+    App->>API: Poll run and download artifact
+    API-->>App: Return generated string
+```
 
 ## Install
 
@@ -42,177 +47,94 @@ No server is ever running between calls. Each call spins up a fresh GitHub Actio
 pip install gh-ai-runner
 ```
 
-**Requirements:**
+Requirements:
+
 - Python 3.9+
-- A GitHub account with a personal access token (PAT)
-- Token scopes needed: `repo`, `workflow`
+- GitHub personal access token with repository and workflow access appropriate to the created runner repository
+- GitHub Actions enabled
 
----
-
-## Quickstart
+## Quick start
 
 ```python
 from gh_ai_runner import ai_call
 
-result = ai_call(
-    github_token="ghp_...",
-    prompt="explain recursion in simple terms",
-)
-
-print(result)
-```
-
-On first run, `gh-ai-runner` will:
-- Create a repo called `ai-inference-runner` on your GitHub account
-- Set up the workflow automatically
-- Download and cache TinyLlama 1.1B (~0.6 GB)
-
-Subsequent calls reuse the cached repo and model.
-
----
-
-## Examples
-
-**Basic question**
-```python
-from gh_ai_runner import ai_call
-
-result = ai_call(
-    github_token="ghp_...",
-    prompt="what is the difference between a list and a tuple in Python?",
-)
-print(result)
-```
-
-**Custom system prompt**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="explain black holes",
-    system="You are a physics professor. Be precise and use analogies.",
-    model="llama",
-    max_tokens=1024,
-)
-print(result)
-```
-
-**Reasoning with DeepSeek-R1**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="if a bat and ball cost $1.10 and the bat costs $1 more than the ball, how much is the ball?",
-    model="deepseek",
-    temperature=0.0,
-)
-print(result)
-```
-
-**Coding with Qwen 2.5**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="write a Python function that checks if a string is a palindrome",
+answer = ai_call(
+    github_token="your-token",
+    prompt="Explain recursion with one small Python example.",
     model="qwen",
+    temperature=0.2,
 )
-print(result)
+
+print(answer)
 ```
 
-**Deterministic output (temperature=0)**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="what is 144 divided by 12?",
-    temperature=0.0,
-    max_tokens=16,
-)
-print(result)
-```
-
-**Silent mode**
-```python
-result = ai_call(
-    github_token="ghp_...",
-    prompt="summarize the theory of evolution",
-    verbose=False,
-)
-print(result)
-```
-
-**Parallel calls (use separate repo per call)**
-```python
-import threading
-from gh_ai_runner import ai_call
-
-TOKEN = "ghp_..."
-results = {}
-
-def run(key, prompt, repo):
-    results[key] = ai_call(
-        github_token=TOKEN,
-        prompt=prompt,
-        repo_name=repo,
-        verbose=False,
-    )
-
-t1 = threading.Thread(target=run, args=("q1", "explain DNA", "runner-repo-1"))
-t2 = threading.Thread(target=run, args=("q2", "explain RNA", "runner-repo-2"))
-
-t1.start(); t2.start()
-t1.join();  t2.join()
-
-print(results["q1"])
-print(results["q2"])
-```
-
-> **Note:** Parallel calls must use different `repo_name` values. Each repo has its own independent run queue.
-
----
-
-## Parameters
-
-| Parameter | Type | Default | Required | Description |
-|---|---|---|---|---|
-| `github_token` | `str` | — | Yes | GitHub PAT with `repo` and `workflow` scopes |
-| `prompt` | `str` | — | Yes | The message or question to send to the model |
-| `model` | `str` | `"tinyllama"` | No | Which model to use. See Models section below |
-| `system` | `str` | `"You are a helpful assistant."` | No | System prompt that controls model behavior |
-| `max_tokens` | `int` | `512` | No | Max tokens to generate. Hard limit: 4096 |
-| `temperature` | `float` | `0.7` | No | Randomness. `0.0` = deterministic, `2.0` = very creative |
-| `cache` | `bool` | `True` | No | Cache model weights between runs. Strongly recommended |
-| `n_ctx` | `int` | `None` | No | Context window size. Defaults to model built-in. Max: 8192 |
-| `repo_name` | `str` | `"ai-inference-runner"` | No | GitHub repo to create or reuse |
-| `verbose` | `bool` | `True` | No | Print step-by-step logs. Set `False` for silent mode |
-
----
+The first call creates or configures `ai-inference-runner`. Later calls skip file commits when the embedded workflow and script hashes match their remote contents.
 
 ## Models
 
-| Key | Model | Size | Default Context | Best For |
-|---|---|---|---|---|
-| `tinyllama` | TinyLlama 1.1B Chat Q4_K_M | 0.6 GB | 2048 | Fast, simple factual answers |
-| `llama` | Llama 3.2 1B Instruct Q4_K_M | 0.7 GB | 4096 | General instruction following |
-| `phi3` | Phi-3.5 Mini Instruct Q4_K_M | 2.2 GB | 4096 | Reasoning, best overall quality |
-| `qwen` | Qwen 2.5 1.5B Instruct Q4_K_M | 1.0 GB | 4096 | Coding and math |
-| `gemma2` | Gemma 2 2B Instruct Q4_K_M | 1.6 GB | 4096 | Instruction following, chat |
-| `deepseek` | DeepSeek-R1 1.5B Q4_K_M | 1.1 GB | 4096 | Step-by-step reasoning |
+| Key | Model | GGUF size | Default context | Good fit |
+|---|---|---:|---:|---|
+| `tinyllama` | TinyLlama 1.1B Chat | 0.6 GB | 2,048 | Fast basic answers |
+| `llama` | Llama 3.2 1B Instruct | 0.7 GB | 4,096 | General instructions |
+| `phi3` | Phi-3.5 Mini Instruct | 2.2 GB | 4,096 | Stronger reasoning |
+| `qwen` | Qwen 2.5 1.5B Instruct | 1.0 GB | 4,096 | Code and math |
+| `gemma2` | Gemma 2 2B Instruct | 1.6 GB | 4,096 | Chat/instructions |
+| `deepseek` | DeepSeek-R1 1.5B | 1.1 GB | 4,096 | Deliberative reasoning |
 
-All models are quantized GGUF files from HuggingFace. No HuggingFace token required.
+Validation caps context at 8,192, generated tokens at 4,096, and temperature between 0 and 2. The package estimates memory from model size plus extra context before dispatch.
 
----
+## API reference
 
-## Context and output size
+```python
+ai_call(
+    github_token: str,
+    prompt: str,
+    model: str = "tinyllama",
+    system: str = "You are a helpful assistant.",
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+    cache: bool = True,
+    n_ctx: int | None = None,
+    repo_name: str = "ai-inference-runner",
+    verbose: bool = True,
+) -> str
+```
 
-The context window (`n_ctx`) is the total number of tokens the model can see at once — this includes your system prompt, your prompt, and the generated output combined. Max across all models is 8192.
+Parallel calls require separate `repo_name` values because each repository has its own workflow/run stream.
 
----
+## Package architecture
 
-## Changelog
+```text
+gh_ai_runner/
+├── core.py         public orchestration API
+├── repo.py         repo creation and hash-based file sync
+├── runner.py       embedded workflow and inference script
+├── models.py       model catalog and resource limits
+├── validation.py   parameter and memory validation
+├── polling.py      workflow run discovery/completion
+├── artifact.py     output download and extraction
+└── logger.py       elapsed-time progress reporting
+```
 
-### 0.1.16
-- Renamed package from `github-ai` to `gh-ai-runner`
-- Added models: `phi3`, `qwen`, `gemma2`, `deepseek`
-- Smart file sync: runner files only committed when changed (saves ~15s per call)
-- Faster polling: run detection 4s -> 2s, completion poll 12s -> 8s
+## Engineering notes
 
-### 0.1.1
-- Initial release with `tinyllama` and `llama` models
+- Remote file SHA-256 comparison eliminates unnecessary commits and workflow registration churn.
+- Run IDs are snapshotted before dispatch to associate polling with the new invocation.
+- The package adds a concise/direct instruction to the supplied system prompt.
+- GitHub-hosted CPU inference has meaningful cold-start and generation latency; caches are best-effort.
+- Tokens are passed by the caller and should come from a secret store—not source code.
+- The repository currently declares version `0.1.6` in `pyproject.toml`; documentation/release versioning should remain synchronized.
+- Distribution archives are checked into `dist/`; releases are a cleaner long-term channel.
+
+## Skills demonstrated
+
+Python package design · REST orchestration · CI as compute · idempotent provisioning · content hashing · polling/event correlation · artifact retrieval · resource validation · open-model deployment
+
+## Resume-ready highlight
+
+> Published a Python orchestration package that provisions and synchronizes GitHub-hosted inference workers, dispatches one of six quantized models, correlates workflow runs, retrieves artifacts, and exposes the entire lifecycle as one typed function call.
+
+## License
+
+MIT
+
