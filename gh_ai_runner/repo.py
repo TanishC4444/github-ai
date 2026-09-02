@@ -3,6 +3,7 @@ import hashlib
 import time
 
 import requests
+from nacl import encoding, public
 
 from .logger import _log
 from .runner import INFERENCE_SCRIPT, WORKFLOW_YAML
@@ -18,10 +19,36 @@ def _headers(token):
     }
 
 
+def _set_actions_secret(token, username, repo_name, secret_name, value):
+    key_response = requests.get(
+        f"{API}/repos/{username}/{repo_name}/actions/secrets/public-key",
+        headers=_headers(token),
+    )
+    key_response.raise_for_status()
+    key_data = key_response.json()
+    public_key = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
+    encrypted = public.SealedBox(public_key).encrypt(value.encode())
+    response = requests.put(
+        f"{API}/repos/{username}/{repo_name}/actions/secrets/{secret_name}",
+        headers=_headers(token),
+        json={
+            "encrypted_value": encoding.Base64Encoder.encode(encrypted).decode(),
+            "key_id": key_data["key_id"],
+        },
+    )
+    response.raise_for_status()
+
+
 def _get_username(token):
     r = requests.get(f"{API}/user", headers=_headers(token))
     r.raise_for_status()
     return r.json()["login"]
+
+
+def _get_default_branch(token, username, repo_name):
+    r = requests.get(f"{API}/repos/{username}/{repo_name}", headers=_headers(token))
+    r.raise_for_status()
+    return r.json().get("default_branch", "main")
 
 
 def _repo_exists(token, username, repo_name):

@@ -3,7 +3,7 @@ from datetime import datetime
 
 
 def _ts():
-    return datetime.now().strftime("%H:%M:%S")
+    return datetime.now().astimezone().strftime("%H:%M:%S")
 
 
 def _elapsed(since):

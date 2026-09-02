@@ -1,4 +1,5 @@
 import io
+import json
 import time
 import zipfile
 
@@ -6,6 +7,7 @@ import requests
 
 from .logger import _log
 from .repo import API, _headers
+from .types import InferenceResult, ResourceUsage, TokenUsage
 
 
 def _download_output(token, username, repo_name, run_id, verbose, timeout=60):
@@ -42,3 +44,66 @@ def _download_output(token, username, repo_name, run_id, verbose, timeout=60):
             raise RuntimeError(f"output.txt not found in artifact. Contents: {z.namelist()}")
         with z.open(name) as f:
             return f.read().decode()
+
+
+def _download_result(token, username, repo_name, run_id, job_id, correlation_id, verbose, timeout=60):
+    start = time.monotonic()
+    target = None
+    artifact_name = f"ai-output-{correlation_id}"
+    while time.monotonic() - start < timeout:
+        response = requests.get(
+            f"{API}/repos/{username}/{repo_name}/actions/runs/{run_id}/artifacts",
+            headers=_headers(token),
+        )
+        response.raise_for_status()
+        target = next(
+            (item for item in response.json().get("artifacts", []) if item["name"] == artifact_name),
+            None,
+        )
+        if target:
+            break
+        time.sleep(2)
+    if not target:
+        raise RuntimeError(f"No {artifact_name} artifact found after waiting.")
+
+    response = requests.get(
+        f"{API}/repos/{username}/{repo_name}/actions/artifacts/{target['id']}/zip",
+        headers=_headers(token),
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        name = next((item for item in archive.namelist() if item.endswith("result.json")), None)
+        if not name:
+            raise RuntimeError(f"result.json not found in artifact. Contents: {archive.namelist()}")
+        data = json.loads(archive.read(name).decode("utf-8"))
+
+    usage = data.get("usage") or {}
+    resources = data.get("resources") or {}
+    return InferenceResult(
+        job_id=job_id,
+        correlation_id=correlation_id,
+        run_id=run_id,
+        output=data.get("output", ""),
+        model=data.get("model", ""),
+        provider=data.get("provider", "local"),
+        usage=TokenUsage(
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            total_tokens=int(usage.get("total_tokens", 0)),
+        ),
+        resources=ResourceUsage(**{
+            field: resources.get(field, default)
+            for field, default in {
+                "cpu_count": 0,
+                "memory_total_bytes": 0,
+                "memory_available_bytes": 0,
+                "disk_total_bytes": 0,
+                "disk_free_bytes": 0,
+                "peak_memory_bytes": 0,
+                "duration_seconds": 0.0,
+                "runner_os": "",
+            }.items()
+        }),
+        raw=data,
+    )

@@ -1,15 +1,15 @@
 from .models import (
-    MODELS,
-    RUNNER_RAM_GB,
-    RAM_PER_1K_CTX_GB,
-    MAX_TOKENS_LIMIT,
     MAX_TEMPERATURE,
+    MAX_TOKENS_LIMIT,
     MIN_TEMPERATURE,
+    MODELS,
+    RAM_PER_1K_CTX_GB,
+    RUNNER_RAM_GB,
 )
 
 
 def _validate(model, max_tokens, temperature, n_ctx):
-    cfg    = MODELS[model]
+    cfg = MODELS[model] if model is not None else None
     errors = []
 
     if not (MIN_TEMPERATURE <= temperature <= MAX_TEMPERATURE):
@@ -22,8 +22,8 @@ def _validate(model, max_tokens, temperature, n_ctx):
     if max_tokens > MAX_TOKENS_LIMIT:
         errors.append(f"max_tokens={max_tokens} exceeds hard limit of {MAX_TOKENS_LIMIT}.")
 
-    effective_n_ctx = n_ctx or cfg["n_ctx"]
-    if effective_n_ctx > cfg["max_n_ctx"]:
+    effective_n_ctx = n_ctx or (cfg["n_ctx"] if cfg else 8192)
+    if cfg and effective_n_ctx > cfg["max_n_ctx"]:
         errors.append(
             f"n_ctx={effective_n_ctx} exceeds safe limit of {cfg['max_n_ctx']}. Risk of OOM."
         )
@@ -32,10 +32,10 @@ def _validate(model, max_tokens, temperature, n_ctx):
             f"max_tokens={max_tokens} must be less than n_ctx={effective_n_ctx}."
         )
 
-    base_ram  = cfg["size_gb"]
-    extra_ctx = max(0, effective_n_ctx - cfg["n_ctx"])
+    base_ram = cfg["size_gb"] if cfg else 0
+    extra_ctx = max(0, effective_n_ctx - cfg["n_ctx"]) if cfg else 0
     total_ram = base_ram + (extra_ctx / 1000) * RAM_PER_1K_CTX_GB + 1.0
-    if total_ram > RUNNER_RAM_GB:
+    if cfg and total_ram > RUNNER_RAM_GB:
         errors.append(
             f"Estimated RAM ({total_ram:.1f} GB) exceeds runner limit ({RUNNER_RAM_GB} GB)."
         )

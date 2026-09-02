@@ -1,101 +1,186 @@
 import hashlib
 
 INFERENCE_SCRIPT = r'''
-import os, urllib.request, warnings
+import json
+import os
+import platform
+import resource
+import shutil
+import time
+import urllib.error
+import urllib.request
+import warnings
+
 warnings.filterwarnings("ignore")
-from llama_cpp import Llama
 
 MODEL_MAP = {
     "tinyllama": {
-        "url":      "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-        "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-        "n_ctx":    2048,
+        "url": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf", "n_ctx": 2048,
     },
     "llama": {
-        "url":      "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-        "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-        "n_ctx":    4096,
+        "url": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "filename": "Llama-3.2-1B-Instruct-Q4_K_M.gguf", "n_ctx": 4096,
     },
-
-    # ── ADD NEW MODELS BELOW THIS LINE ──────────────────────────────────────
-    # Keep in sync with MODELS in models.py
-    # ────────────────────────────────────────────────────────────────────────
-
     "phi3": {
-        "url":      "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        "n_ctx":    4096,
+        "url": "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf", "n_ctx": 4096,
     },
     "qwen": {
-        "url":      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "n_ctx":    4096,
+        "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "n_ctx": 4096,
     },
     "gemma2": {
-        "url":      "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
-        "filename": "gemma-2-2b-it-Q4_K_M.gguf",
-        "n_ctx":    4096,
+        "url": "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+        "filename": "gemma-2-2b-it-Q4_K_M.gguf", "n_ctx": 4096,
     },
     "deepseek": {
-        "url":      "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
-        "filename": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
-        "n_ctx":    4096,
+        "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        "filename": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf", "n_ctx": 4096,
     },
 }
 
-model_key   = os.environ["MODEL"]
-prompt      = os.environ["PROMPT"]
-system      = os.environ.get("SYSTEM", "You are a helpful assistant.")
-max_tokens  = int(os.environ.get("MAX_TOKENS", "512"))
-temperature = float(os.environ.get("TEMPERATURE", "0.7"))
-n_ctx_env   = os.environ.get("N_CTX", "").strip()
 
-cfg        = MODEL_MAP[model_key]
-n_ctx      = int(n_ctx_env) if n_ctx_env else cfg["n_ctx"]
-model_path = f"model_cache/{cfg['filename']}"
+def memory_info():
+    values = {}
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as stream:
+            for line in stream:
+                key, value = line.split(":", 1)
+                values[key] = int(value.strip().split()[0]) * 1024
+    except (OSError, ValueError):
+        pass
+    return values
 
-if not os.path.exists(model_path):
-    os.makedirs("model_cache", exist_ok=True)
-    print(f"Downloading {cfg['filename']}...")
-    urllib.request.urlretrieve(cfg["url"], model_path)
 
-print(f"Loading {cfg['filename']} (n_ctx={n_ctx})...")
-llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=4, verbose=False)
+def resource_snapshot(started):
+    memory = memory_info()
+    disk = shutil.disk_usage(".")
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if platform.system() != "Darwin":
+        peak *= 1024
+    return {
+        "cpu_count": os.cpu_count() or 1,
+        "memory_total_bytes": memory.get("MemTotal", 0),
+        "memory_available_bytes": memory.get("MemAvailable", 0),
+        "disk_total_bytes": disk.total,
+        "disk_free_bytes": disk.free,
+        "peak_memory_bytes": peak,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "runner_os": platform.platform(),
+    }
 
-print("Running inference...")
-response = llm.create_chat_completion(
-    messages=[
-        {"role": "system", "content": system},
-        {"role": "user",   "content": prompt},
-    ],
-    max_tokens=max_tokens,
-    temperature=temperature,
-)
 
-output = response["choices"][0]["message"]["content"]
-print("\n=== OUTPUT ===")
-print(output)
+def provider_inference(messages, max_tokens, temperature, model, base_url):
+    base_url = base_url.rstrip("/")
+    api_key = os.environ.get("PROVIDER_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "GitHub Actions secret 'GH_AI_PROVIDER_API_KEY' is missing"
+        )
+    payload = json.dumps({
+        "model": model, "messages": messages,
+        "max_tokens": max_tokens, "temperature": temperature,
+    }).encode()
+    request = urllib.request.Request(
+        base_url + "/chat/completions", data=payload,
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:1000]
+        raise RuntimeError(f"Provider returned HTTP {error.code}: {detail}") from error
 
-with open("output.txt", "w") as f:
-    f.write(output)
+
+def local_inference(messages, max_tokens, temperature, local_model, requested_n_ctx):
+    from llama_cpp import Llama
+
+    cfg = MODEL_MAP[local_model]
+    n_ctx = int(requested_n_ctx) if requested_n_ctx else cfg["n_ctx"]
+    model_path = os.path.join("model_cache", cfg["filename"])
+    if not os.path.exists(model_path):
+        os.makedirs("model_cache", exist_ok=True)
+        urllib.request.urlretrieve(cfg["url"], model_path)
+    cpu_count = os.cpu_count() or 1
+    threads = max(1, cpu_count - 1) if cpu_count > 2 else cpu_count
+    llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=threads, verbose=False)
+    return llm.create_chat_completion(
+        messages=messages, max_tokens=max_tokens, temperature=temperature
+    )
+
+
+started = time.monotonic()
+job_id = os.environ["JOB_ID"]
+attempt = int(os.environ.get("ATTEMPT", "1"))
+backend = os.environ.get("BACKEND", "local")
+config = json.loads(os.environ.get("CONFIG_JSON", "{}"))
+provider_name = config.get("provider_name", "local")
+model = config["model"]
+messages = [
+    {"role": "system", "content": os.environ.get("SYSTEM", "You are a helpful assistant.")},
+    {"role": "user", "content": os.environ["PROMPT"]},
+]
+max_tokens = int(config.get("max_tokens", 512))
+temperature = float(config.get("temperature", 0.7))
+
+result = {
+    "schema_version": 1, "job_id": job_id, "attempt": attempt,
+    "correlation_id": f"{job_id}-{attempt}", "model": model,
+    "provider": provider_name if backend == "provider" else "local",
+    "output": "", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    "resources": {},
+}
+
+try:
+    response = (
+        provider_inference(
+            messages, max_tokens, temperature, model, config.get("provider_url", "")
+        )
+        if backend == "provider"
+        else local_inference(
+            messages, max_tokens, temperature,
+            os.environ.get("LOCAL_MODEL", "tinyllama"), config.get("n_ctx"),
+        )
+    )
+    result["output"] = response["choices"][0]["message"]["content"] or ""
+    usage = response.get("usage") or {}
+    result["usage"] = {
+        "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+        "completion_tokens": int(usage.get("completion_tokens", 0)),
+        "total_tokens": int(usage.get("total_tokens", 0)),
+    }
+except Exception as error:
+    result["error"] = {"type": type(error).__name__, "message": str(error)}
+    raise
+finally:
+    result["resources"] = resource_snapshot(started)
+    with open("result.json", "w", encoding="utf-8") as stream:
+        json.dump(result, stream, indent=2)
 '''
+
 
 WORKFLOW_YAML = """\
 name: AI Inference
+run-name: AI inference ${{ inputs.job_id }}-${{ inputs.attempt }}
 on:
   workflow_dispatch:
     inputs:
-      prompt:      { description: "User prompt",     required: true  }
-      system:      { description: "System prompt",   required: false, default: "You are a helpful assistant." }
-      model:       { description: "Model key",       required: false, default: "tinyllama" }
-      cache:       { description: "Cache weights",   required: false, default: "true" }
-      max_tokens:  { description: "Max new tokens",  required: false, default: "512" }
-      temperature: { description: "Temperature",     required: false, default: "0.7" }
-      n_ctx:       { description: "Context window",  required: false, default: "" }
+      job_id:          { description: "Correlation ID", required: true }
+      attempt:         { description: "Attempt number", required: true, default: "1" }
+      prompt:          { description: "User prompt", required: true }
+      system:          { description: "System prompt", required: false, default: "You are a helpful assistant." }
+      backend:         { description: "local or provider", required: true, default: "local" }
+      local_model:     { description: "Local model key", required: false, default: "tinyllama" }
+      cache:           { description: "Cache weights", required: false, default: "true" }
+      config:          { description: "Non-secret inference settings JSON", required: true }
 
 jobs:
   inference:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,47 +192,55 @@ jobs:
 
       - name: Cache venv
         id: cache-venv
+        if: ${{ inputs.backend == 'local' }}
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-llama-cpp-v1
+          key: venv-llama-cpp-v2
 
       - name: Cache model weights
-        if: ${{ inputs.cache == 'true' }}
+        if: ${{ inputs.backend == 'local' && inputs.cache == 'true' }}
         uses: actions/cache@v4
         with:
           path: model_cache
-          key: gguf-${{ inputs.model }}-v1
+          key: gguf-${{ inputs.local_model }}-v2
 
-      - name: Install dependencies
-        if: steps.cache-venv.outputs.cache-hit != 'true'
+      - name: Install local inference dependencies
+        if: ${{ inputs.backend == 'local' && steps.cache-venv.outputs.cache-hit != 'true' }}
         run: |
           python -m venv .venv
           CMAKE_ARGS="-DGGML_METAL=off" .venv/bin/pip install llama-cpp-python -q
 
       - name: Run inference
         env:
-          PROMPT:      ${{ inputs.prompt }}
-          SYSTEM:      ${{ inputs.system }}
-          MODEL:       ${{ inputs.model }}
-          MAX_TOKENS:  ${{ inputs.max_tokens }}
-          TEMPERATURE: ${{ inputs.temperature }}
-          N_CTX:       ${{ inputs.n_ctx }}
-        run: .venv/bin/python run_inference.py
+          JOB_ID:           ${{ inputs.job_id }}
+          ATTEMPT:          ${{ inputs.attempt }}
+          PROMPT:           ${{ inputs.prompt }}
+          SYSTEM:           ${{ inputs.system }}
+          BACKEND:          ${{ inputs.backend }}
+          LOCAL_MODEL:      ${{ inputs.local_model }}
+          CONFIG_JSON:      ${{ inputs.config }}
+          PROVIDER_API_KEY: ${{ secrets.GH_AI_PROVIDER_API_KEY }}
+        run: |
+          if [ "$BACKEND" = "local" ]; then
+            .venv/bin/python run_inference.py
+          else
+            python run_inference.py
+          fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload structured result
+        if: ${{ always() && hashFiles('result.json') != '' }}
+        uses: actions/upload-artifact@v4
         with:
-          name: ai-output
-          path: output.txt
-          retention-days: 1
+          name: ai-output-${{ inputs.job_id }}-${{ inputs.attempt }}
+          path: result.json
+          retention-days: 3
 """
 
 
 def _script_hash():
-    """SHA-256 of the inference script — used to skip unnecessary commits."""
     return hashlib.sha256(INFERENCE_SCRIPT.encode()).hexdigest()
 
 
 def _workflow_hash():
-    """SHA-256 of the workflow YAML — used to skip unnecessary commits."""
     return hashlib.sha256(WORKFLOW_YAML.encode()).hexdigest()

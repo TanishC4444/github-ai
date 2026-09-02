@@ -1,5 +1,33 @@
+from .client import GitHubAIRunner
 from .core import ai_call
-from .models import MODELS, MAX_TOKENS_LIMIT, MAX_TEMPERATURE, MIN_TEMPERATURE
+from .job import AIJob
+from .models import MAX_TEMPERATURE, MAX_TOKENS_LIMIT, MIN_TEMPERATURE, MODELS
+from .types import (
+    InferenceResult,
+    JobCancelledError,
+    JobFailedError,
+    JobStatus,
+    ProviderConfig,
+    ResourceUsage,
+    RetryPolicy,
+    TokenUsage,
+)
 
-__version__ = "0.1.6"
-__all__ = ["ai_call", "MODELS", "MAX_TOKENS_LIMIT", "MAX_TEMPERATURE", "MIN_TEMPERATURE"]
+__version__ = "0.2.0"
+__all__ = [
+    "MAX_TEMPERATURE",
+    "MAX_TOKENS_LIMIT",
+    "MIN_TEMPERATURE",
+    "MODELS",
+    "AIJob",
+    "GitHubAIRunner",
+    "InferenceResult",
+    "JobCancelledError",
+    "JobFailedError",
+    "JobStatus",
+    "ProviderConfig",
+    "ResourceUsage",
+    "RetryPolicy",
+    "TokenUsage",
+    "ai_call",
+]

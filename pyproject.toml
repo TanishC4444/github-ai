@@ -1,27 +1,26 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gh-ai-runner"
-version = "0.1.6"
-description = "Serverless AI inference via GitHub Actions — no server required"
+version = "0.2.0"
+description = "CI-native, resource-aware AI workloads on ephemeral GitHub Actions runners"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "Tanish Chauhan" }]
 keywords = ["ai", "llm", "inference", "github-actions", "llama", "serverless"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["requests>=2.28"]
+dependencies = ["requests>=2.28", "PyNaCl>=1.5"]
 
 [project.urls]
-Homepage = "https://github.com/TanishC4444/gh-ai-runner"
-Repository = "https://github.com/TanishC4444/gh-ai-runner"
+Homepage = "https://github.com/TanishC4444/github-ai"
+Repository = "https://github.com/TanishC4444/github-ai"
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -29,3 +28,9 @@ dev = ["pytest"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gh_ai_runner*"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+ignore = ["UP045"]
