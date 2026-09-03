@@ -59,6 +59,19 @@ class ProviderConfig:
 
 
 @dataclass(frozen=True)
+class InferenceRequest:
+    prompt: str
+    model: str = "tinyllama"
+    system: str = "You are a helpful assistant."
+    max_tokens: int = 512
+    temperature: float = 0.7
+    cache: bool = True
+    n_ctx: Optional[int] = None
+    provider: Optional[ProviderConfig] = None
+    retry_policy: Optional[RetryPolicy] = None
+
+
+@dataclass(frozen=True)
 class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -78,6 +91,13 @@ class ResourceUsage:
 
 
 @dataclass(frozen=True)
+class IntegrityInfo:
+    algorithm: str = "sha256"
+    request_sha256: str = ""
+    output_sha256: str = ""
+
+
+@dataclass(frozen=True)
 class InferenceResult:
     job_id: str
     correlation_id: str
@@ -87,6 +107,7 @@ class InferenceResult:
     provider: str
     usage: TokenUsage = field(default_factory=TokenUsage)
     resources: ResourceUsage = field(default_factory=ResourceUsage)
+    integrity: IntegrityInfo = field(default_factory=IntegrityInfo)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,3 +125,31 @@ class JobFailedError(RuntimeError):
 
 class JobCancelledError(JobFailedError):
     pass
+
+
+class IntegrityError(JobFailedError):
+    pass
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    correlation_id: str
+    job_id: str
+    attempt: int
+    batch_id: Optional[str]
+    owner: str
+    repo_name: str
+    status: str
+    run_id: Optional[int]
+    model: str
+    provider: str
+    prompt_sha256: str
+    request_sha256: str
+    output_sha256: Optional[str]
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    total_tokens: Optional[int]
+    duration_seconds: Optional[float]
+    created_at: str
+    updated_at: str
+    error: Optional[str]

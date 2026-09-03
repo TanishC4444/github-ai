@@ -4,13 +4,16 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
 
 from .artifact import _download_result
+from .batch import BatchJob, ComparisonJob
 from .job import AIJob
 from .logger import _log
+from .metadata import DEFAULT_METADATA_PATH, MetadataStore, now_iso, result_fields
 from .models import MODELS
 from .polling import _find_run, _wait_for_completion
 from .repo import (
@@ -22,7 +25,14 @@ from .repo import (
     _set_actions_secret,
     _sync_files,
 )
-from .types import InferenceResult, ProviderConfig, RetryPolicy
+from .types import (
+    InferenceRequest,
+    InferenceResult,
+    JobRecord,
+    JobStatus,
+    ProviderConfig,
+    RetryPolicy,
+)
 from .validation import _validate
 
 
@@ -38,6 +48,7 @@ class GitHubAIRunner:
         run_discovery_timeout: float = 180,
         completion_timeout: float = 900,
         poll_interval: float = 8,
+        metadata_path: Optional[str | Path] = DEFAULT_METADATA_PATH,
     ) -> None:
         if not github_token:
             raise ValueError("github_token cannot be empty")
@@ -51,6 +62,7 @@ class GitHubAIRunner:
         self._default_branch: Optional[str] = None
         self._prepared = False
         self._prepare_lock = threading.Lock()
+        self._metadata = MetadataStore(metadata_path) if metadata_path is not None else None
 
     @property
     def username(self) -> str:
@@ -102,6 +114,7 @@ class GitHubAIRunner:
         n_ctx: Optional[int] = None,
         provider: Optional[ProviderConfig] = None,
         retry_policy: Optional[RetryPolicy] = None,
+        _batch_id: Optional[str] = None,
     ) -> AIJob:
         if not prompt.strip():
             raise ValueError("prompt cannot be empty")
@@ -126,9 +139,89 @@ class GitHubAIRunner:
             uuid.uuid4().hex,
             request,
             retry_policy or RetryPolicy(),
+            batch_id=_batch_id,
         )
         self._dispatch(job)
         return job
+
+    def submit_batch(self, requests_: list[InferenceRequest]) -> BatchJob:
+        """Dispatch a collection of independent requests and return one batch handle."""
+        if not requests_:
+            raise ValueError("requests_ must contain at least one request")
+        for request in requests_:
+            if not isinstance(request, InferenceRequest):
+                raise TypeError("each batch item must be an InferenceRequest")
+            if not request.prompt.strip():
+                raise ValueError("batch prompts cannot be empty")
+            if request.provider is None and request.model not in MODELS:
+                raise ValueError(f"model must be one of: {list(MODELS.keys())}")
+            _validate(
+                request.model if request.provider is None else None,
+                request.max_tokens,
+                request.temperature,
+                request.n_ctx,
+            )
+        batch_id = uuid.uuid4().hex
+        jobs = []
+        for request in requests_:
+            jobs.append(
+                self.submit(
+                    request.prompt,
+                    model=request.model,
+                    system=request.system,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    cache=request.cache,
+                    n_ctx=request.n_ctx,
+                    provider=request.provider,
+                    retry_policy=request.retry_policy,
+                    _batch_id=batch_id,
+                )
+            )
+        return BatchJob(jobs, batch_id=batch_id)
+
+    def compare(self, prompt: str, models: list[str], **kwargs) -> ComparisonJob:
+        """Dispatch the same prompt to distinct local models for side-by-side results."""
+        if len(models) < 2:
+            raise ValueError("compare requires at least two models")
+        if len(set(models)) != len(models):
+            raise ValueError("comparison models must be unique")
+        if kwargs.get("provider") is not None:
+            raise ValueError("compare currently supports local models; use submit_batch for providers")
+        invalid = [model for model in models if model not in MODELS]
+        if invalid:
+            raise ValueError(f"unknown comparison models: {invalid}")
+        requests_ = [InferenceRequest(prompt=prompt, model=model, **kwargs) for model in models]
+        batch = self.submit_batch(requests_)
+        return ComparisonJob(batch.jobs, models, batch_id=batch.batch_id)
+
+    def list_jobs(self, limit: int = 100) -> list[JobRecord]:
+        if self._metadata is None:
+            return []
+        return self._metadata.list(limit)
+
+    def resume(self, job_id: str) -> AIJob:
+        if self._metadata is None:
+            raise RuntimeError("metadata persistence is disabled")
+        record = self._metadata.get(job_id)
+        if record is None:
+            raise KeyError(f"Unknown job {job_id}")
+        if record.owner != self.username or record.repo_name != self.repo_name:
+            raise ValueError(
+                f"Job {job_id} belongs to {record.owner}/{record.repo_name}, "
+                f"not {self.username}/{self.repo_name}"
+            )
+        return AIJob(
+            self,
+            record.job_id,
+            {},
+            RetryPolicy(),
+            attempt=record.attempt,
+            created_at=datetime.fromisoformat(record.created_at),
+            request_digest=record.request_sha256,
+            prompt_digest=record.prompt_sha256,
+            batch_id=record.batch_id,
+        )
 
     def get_job(
         self,
@@ -147,6 +240,50 @@ class GitHubAIRunner:
             attempt=attempt,
             created_at=created_at or datetime.fromtimestamp(0, timezone.utc),
         )
+
+    def _record_job(
+        self,
+        job: AIJob,
+        status: JobStatus,
+        *,
+        result: Optional[InferenceResult] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        if self._metadata is None:
+            return
+        existing = self._metadata.get(job.job_id, job.attempt)
+        request = job.request
+        model = request.get("model") or (existing.model if existing else "unknown")
+        provider_config = request.get("provider")
+        provider = (
+            provider_config.name
+            if provider_config
+            else (existing.provider if existing else "local")
+        )
+        fields = result_fields(result)
+        record = JobRecord(
+            correlation_id=job.correlation_id,
+            job_id=job.job_id,
+            attempt=job.attempt,
+            batch_id=job.batch_id,
+            owner=self.username,
+            repo_name=self.repo_name,
+            status=status.value,
+            run_id=job.run_id,
+            model=model,
+            provider=provider,
+            prompt_sha256=job.prompt_digest or (existing.prompt_sha256 if existing else ""),
+            request_sha256=job.request_digest or (existing.request_sha256 if existing else ""),
+            output_sha256=fields.get("output_sha256") or (existing.output_sha256 if existing else None),
+            prompt_tokens=fields.get("prompt_tokens") if result else (existing.prompt_tokens if existing else None),
+            completion_tokens=fields.get("completion_tokens") if result else (existing.completion_tokens if existing else None),
+            total_tokens=fields.get("total_tokens") if result else (existing.total_tokens if existing else None),
+            duration_seconds=fields.get("duration_seconds") if result else (existing.duration_seconds if existing else None),
+            created_at=existing.created_at if existing else job.created_at.isoformat(),
+            updated_at=now_iso(),
+            error=error,
+        )
+        self._metadata.upsert(record)
 
     def _dispatch(self, job: AIJob) -> None:
         provider = job.request.get("provider")
@@ -178,6 +315,7 @@ class GitHubAIRunner:
             timeout=30,
         )
         response.raise_for_status()
+        self._record_job(job, JobStatus.DISPATCHED)
 
     def _find_run(self, job: AIJob, *, wait: bool, timeout: Optional[float] = None):
         run = _find_run(
@@ -214,6 +352,7 @@ class GitHubAIRunner:
             job.job_id,
             job.correlation_id,
             self.verbose,
+            expected_request_sha256=job.request_digest or None,
         )
 
     def _cancel_run(self, run_id: int) -> bool:

@@ -17,6 +17,7 @@ from gh_ai_runner import (
 )
 from gh_ai_runner.artifact import _download_result
 from gh_ai_runner.core import ai_call
+from gh_ai_runner.integrity import request_sha256
 from gh_ai_runner.job import AIJob
 from gh_ai_runner.polling import _find_run
 from gh_ai_runner.repo import _set_actions_secret
@@ -30,8 +31,8 @@ def response(json_data=None, status=200, content=b""):
     return item
 
 
-def prepared_runner():
-    runner = GitHubAIRunner("token", verbose=False)
+def prepared_runner(metadata_path=None):
+    runner = GitHubAIRunner("token", verbose=False, metadata_path=metadata_path)
     runner._prepared = True
     runner._username = "octocat"
     runner._default_branch = "trunk"
@@ -232,5 +233,12 @@ def test_embedded_provider_worker_reports_usage_and_resources(tmp_path, monkeypa
     assert result["output"] == "provider answer"
     assert result["usage"]["total_tokens"] == 8
     assert result["resources"]["cpu_count"] >= 1
+    expected_request = {
+        "prompt": "hello", "system": "help", "model": "remote-model",
+        "local_model": "tinyllama", "cache": True, "max_tokens": 10,
+        "temperature": 0.2, "n_ctx": None,
+        "provider": ProviderConfig("test", "remote-model", "https://provider.example/v1"),
+    }
+    assert result["integrity"]["request_sha256"] == request_sha256(expected_request)
     request = urlopen.call_args.args[0]
     assert request.headers["Authorization"] == "Bearer provider-secret"

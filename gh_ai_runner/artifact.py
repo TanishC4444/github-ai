@@ -5,9 +5,16 @@ import zipfile
 
 import requests
 
+from .integrity import text_sha256
 from .logger import _log
 from .repo import API, _headers
-from .types import InferenceResult, ResourceUsage, TokenUsage
+from .types import (
+    InferenceResult,
+    IntegrityError,
+    IntegrityInfo,
+    ResourceUsage,
+    TokenUsage,
+)
 
 
 def _download_output(token, username, repo_name, run_id, verbose, timeout=60):
@@ -46,7 +53,17 @@ def _download_output(token, username, repo_name, run_id, verbose, timeout=60):
             return f.read().decode()
 
 
-def _download_result(token, username, repo_name, run_id, job_id, correlation_id, verbose, timeout=60):
+def _download_result(
+    token,
+    username,
+    repo_name,
+    run_id,
+    job_id,
+    correlation_id,
+    verbose,
+    timeout=60,
+    expected_request_sha256=None,
+):
     start = time.monotonic()
     target = None
     artifact_name = f"ai-output-{correlation_id}"
@@ -78,6 +95,17 @@ def _download_result(token, username, repo_name, run_id, job_id, correlation_id,
             raise RuntimeError(f"result.json not found in artifact. Contents: {archive.namelist()}")
         data = json.loads(archive.read(name).decode("utf-8"))
 
+    if data.get("job_id") != job_id or data.get("correlation_id") != correlation_id:
+        raise IntegrityError("Result identity does not match the requested job", run_id=run_id)
+    integrity = data.get("integrity") or {}
+    if integrity and integrity.get("algorithm") != "sha256":
+        raise IntegrityError("Result uses an unsupported integrity algorithm", run_id=run_id)
+    actual_output_sha256 = text_sha256(data.get("output", ""))
+    if integrity and integrity.get("output_sha256") != actual_output_sha256:
+        raise IntegrityError("Result output checksum verification failed", run_id=run_id)
+    if expected_request_sha256 and integrity.get("request_sha256") != expected_request_sha256:
+        raise IntegrityError("Result request checksum verification failed", run_id=run_id)
+
     usage = data.get("usage") or {}
     resources = data.get("resources") or {}
     return InferenceResult(
@@ -105,5 +133,10 @@ def _download_result(token, username, repo_name, run_id, job_id, correlation_id,
                 "runner_os": "",
             }.items()
         }),
+        integrity=IntegrityInfo(
+            algorithm=integrity.get("algorithm", "sha256"),
+            request_sha256=integrity.get("request_sha256", ""),
+            output_sha256=integrity.get("output_sha256", ""),
+        ),
         raw=data,
     )

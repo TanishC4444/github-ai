@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+from .integrity import request_sha256, text_sha256
 from .types import (
     InferenceResult,
     JobCancelledError,
@@ -33,6 +34,9 @@ class AIJob:
         *,
         attempt: int = 1,
         created_at: Optional[datetime] = None,
+        request_digest: str = "",
+        prompt_digest: str = "",
+        batch_id: Optional[str] = None,
     ) -> None:
         self.runner = runner
         self.job_id = job_id
@@ -44,6 +48,15 @@ class AIJob:
         self._cancelled = False
         self._result: Optional[InferenceResult] = None
         self._lock = threading.RLock()
+        self.batch_id = batch_id
+        try:
+            calculated_request_digest = request_sha256(self.request) if self.request else ""
+        except KeyError:
+            calculated_request_digest = ""
+        self.request_digest = request_digest or calculated_request_digest
+        self.prompt_digest = prompt_digest or (
+            text_sha256(self.request["prompt"]) if self.request.get("prompt") else ""
+        )
 
     @property
     def correlation_id(self) -> str:
@@ -65,12 +78,17 @@ class AIJob:
             self.run_id = int(run["id"])
             status = run.get("status", "queued")
             if status != "completed":
-                return JobStatus.IN_PROGRESS if status == "in_progress" else JobStatus.QUEUED
+                state = JobStatus.IN_PROGRESS if status == "in_progress" else JobStatus.QUEUED
+                self.runner._record_job(self, state)
+                return state
             conclusion = run.get("conclusion")
             if conclusion == "success":
+                self.runner._record_job(self, JobStatus.COMPLETED)
                 return JobStatus.COMPLETED
             if conclusion == "cancelled":
+                self.runner._record_job(self, JobStatus.CANCELLED)
                 return JobStatus.CANCELLED
+            self.runner._record_job(self, JobStatus.FAILED, error=str(conclusion))
             return JobStatus.FAILED
 
     def wait(self, timeout: Optional[float] = None) -> AIJob:
@@ -90,6 +108,7 @@ class AIJob:
                         f"Job {self.job_id} was cancelled", run_id=self.run_id, conclusion=conclusion
                     )
                 if conclusion == "success":
+                    self.runner._record_job(self, JobStatus.COMPLETED)
                     return self
                 if conclusion == "cancelled" or self._cancelled:
                     raise JobCancelledError(
@@ -103,6 +122,7 @@ class AIJob:
             except (JobCancelledError, TimeoutError):
                 raise
             except JobFailedError:
+                self.runner._record_job(self, JobStatus.FAILED, error=str(conclusion))
                 if self.attempt > self.retry_policy.max_retries or self._cancelled:
                     raise
                 if self.retry_policy.delay_seconds:
@@ -116,10 +136,15 @@ class AIJob:
             if self._result is not None:
                 return self._result
         self.wait(timeout=timeout)
-        downloaded = self.runner._download_result(self)
+        try:
+            downloaded = self.runner._download_result(self)
+        except Exception as error:
+            self.runner._record_job(self, JobStatus.FAILED, error=str(error))
+            raise
         with self._lock:
             if self._result is None:
                 self._result = downloaded
+                self.runner._record_job(self, JobStatus.COMPLETED, result=downloaded)
             return self._result
 
     def cancel(self) -> bool:
@@ -130,4 +155,6 @@ class AIJob:
                 return False
             cancelled = self.runner._cancel_run(self.run_id)
             self._cancelled = cancelled
+            if cancelled:
+                self.runner._record_job(self, JobStatus.CANCELLED)
             return cancelled

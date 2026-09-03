@@ -1,6 +1,7 @@
 import hashlib
 
 INFERENCE_SCRIPT = r'''
+import hashlib
 import json
 import os
 import platform
@@ -125,6 +126,22 @@ messages = [
 ]
 max_tokens = int(config.get("max_tokens", 512))
 temperature = float(config.get("temperature", 0.7))
+request_document = {
+    "prompt": os.environ["PROMPT"],
+    "system": os.environ.get("SYSTEM", "You are a helpful assistant."),
+    "backend": backend,
+    "model": model,
+    "local_model": os.environ.get("LOCAL_MODEL", "tinyllama"),
+    "cache": os.environ.get("CACHE", "true") == "true",
+    "max_tokens": max_tokens,
+    "temperature": temperature,
+    "n_ctx": config.get("n_ctx"),
+    "provider_name": provider_name,
+    "provider_url": config.get("provider_url", ""),
+}
+request_sha256 = hashlib.sha256(
+    json.dumps(request_document, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
 
 result = {
     "schema_version": 1, "job_id": job_id, "attempt": attempt,
@@ -132,6 +149,9 @@ result = {
     "provider": provider_name if backend == "provider" else "local",
     "output": "", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     "resources": {},
+    "integrity": {
+        "algorithm": "sha256", "request_sha256": request_sha256, "output_sha256": "",
+    },
 }
 
 try:
@@ -156,6 +176,7 @@ except Exception as error:
     result["error"] = {"type": type(error).__name__, "message": str(error)}
     raise
 finally:
+    result["integrity"]["output_sha256"] = hashlib.sha256(result["output"].encode()).hexdigest()
     result["resources"] = resource_snapshot(started)
     with open("result.json", "w", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
@@ -219,6 +240,7 @@ jobs:
           SYSTEM:           ${{ inputs.system }}
           BACKEND:          ${{ inputs.backend }}
           LOCAL_MODEL:      ${{ inputs.local_model }}
+          CACHE:            ${{ inputs.cache }}
           CONFIG_JSON:      ${{ inputs.config }}
           PROVIDER_API_KEY: ${{ secrets.GH_AI_PROVIDER_API_KEY }}
         run: |

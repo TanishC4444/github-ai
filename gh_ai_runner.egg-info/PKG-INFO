@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: gh-ai-runner
-Version: 0.2.0
+Version: 0.3.0
 Summary: CI-native, resource-aware AI workloads on ephemeral GitHub Actions runners
 Author: Tanish Chauhan
 License-Expression: MIT
@@ -38,7 +38,7 @@ Dynamic: license-file
 
 ## Overview
 
-`gh-ai-runner` is a Python orchestration package that turns a GitHub repository into an on-demand AI workload service. Version 0.2 adds non-blocking jobs, exact run correlation, cancellation, retries, structured token/resource telemetry, and securely stored keys for OpenAI-compatible providers. The original blocking `ai_call()` API remains compatible.
+`gh-ai-runner` is a Python orchestration package that turns a GitHub repository into an on-demand AI workload service. Version 0.3 adds concurrent batches, model comparisons, verified result checksums, and privacy-conscious local job metadata on top of the asynchronous 0.2 runtime. The original blocking `ai_call()` API remains compatible.
 
 No inference server remains online between calls. GitHub supplies the temporary runner; `llama-cpp-python` executes quantized GGUF weights on CPU.
 
@@ -134,6 +134,52 @@ print(result.output, result.usage)
 
 There is one dedicated provider-key slot per runner repository in 0.2. Calling `configure_provider()` again rotates that key. Custom OpenAI-compatible endpoints use `ProviderConfig(name, model, base_url)`; `base_url` must use HTTPS.
 
+## Batches and model comparisons
+
+Batch requests are dispatched independently, then polled concurrently:
+
+```python
+from gh_ai_runner import GitHubAIRunner, InferenceRequest
+
+runner = GitHubAIRunner("your-github-token")
+batch = runner.submit_batch([
+    InferenceRequest("Summarize this release note.", model="tinyllama"),
+    InferenceRequest("Write three test cases.", model="qwen"),
+])
+
+for result in batch.results(timeout=900):
+    print(result.model, result.output)
+```
+
+Use `compare()` to send one prompt to several distinct local models:
+
+```python
+comparison = runner.compare(
+    "Explain optimistic concurrency control.",
+    models=["tinyllama", "qwen", "phi3"],
+    max_tokens=300,
+)
+
+for model, result in comparison.results_by_model().items():
+    print(model, result.output, result.usage.total_tokens)
+```
+
+`BatchJob.refresh()`, `wait()`, `results()`, and `cancel()` operate across the complete group while preserving request order. Every group receives a stable `batch_id`, which is also attached to its jobs and persistent metadata records.
+
+## Integrity and persistent metadata
+
+The client and worker independently calculate a SHA-256 digest of the normalized request. The worker also hashes the generated output. The client rejects an artifact when its job identity, request digest, output digest, or algorithm does not match.
+
+Job metadata is stored by default in `~/.gh_ai_runner/jobs.sqlite3`. It includes job/correlation IDs, attempts, status, model, provider, run ID, timestamps, token counts, duration, and SHA-256 digests. GitHub tokens, provider keys, prompt text, system text, and output text are never stored in this database.
+
+```python
+recent = runner.list_jobs(limit=20)
+resumed = runner.resume(recent[0].job_id)
+print(resumed.refresh())
+```
+
+Pass `metadata_path=None` to disable persistence or supply a custom database path.
+
 ## Models
 
 | Key | Model | GGUF size | Default context | Good fit |
@@ -172,6 +218,9 @@ The function internally creates a client, submits a job, waits, and returns `Inf
 gh_ai_runner/
 ├── client.py       asynchronous client and secure provider setup
 ├── job.py          status, waiting, retry, result, and cancellation handle
+├── batch.py        concurrent batch and comparison handles
+├── metadata.py     privacy-conscious SQLite job metadata
+├── integrity.py    canonical request and output digests
 ├── types.py        typed results, telemetry, policies, and errors
 ├── core.py         backwards-compatible ai_call wrapper
 ├── repo.py         repo creation and hash-based file sync
@@ -191,10 +240,13 @@ gh_ai_runner/
 - The worker reports CPU, memory, disk, peak RSS, duration, and model token usage.
 - Local inference automatically assigns CPU threads from the detected runner resources.
 - Provider secrets use GitHub sealed-box encryption and a dedicated secret slot.
+- Batch result waiting is concurrent and preserves submission order.
+- Result identity and SHA-256 checksums are verified before returning output.
+- Persistent metadata intentionally excludes prompt, system, output, and secret values.
 - The package adds a concise/direct instruction to the supplied system prompt.
 - GitHub-hosted CPU inference has meaningful cold-start and generation latency; caches are best-effort.
 - Tokens are passed by the caller and should come from a secret store—not source code.
-- The repository declares version `0.2.0` in both package metadata and the public module.
+- The repository declares version `0.3.0` in both package metadata and the public module.
 - Distribution archives are checked into `dist/`; releases are a cleaner long-term channel.
 
 ## Skills demonstrated
