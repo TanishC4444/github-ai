@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: gh-ai-runner
-Version: 0.3.0
+Version: 0.3.1
 Summary: CI-native, resource-aware AI workloads on ephemeral GitHub Actions runners
 Author: Tanish Chauhan
 License-Expression: MIT
@@ -20,29 +20,43 @@ Requires-Dist: pytest; extra == "dev"
 Dynamic: license-file
 
 <div align="center">
-<img src="https://images.unsplash.com/photo-1780253256194-34e5867ccb8c?auto=format&fit=crop&w=1800&h=600&q=82" alt="A Python package orchestrating repository setup, cloud inference, and artifact retrieval" width="100%" />
-<sub>Real photography by <a href="https://unsplash.com/photos/developer-typing-code-on-a-laptop-screen-xaWYIbNIOdw">Alicia Christin Gerald on Unsplash</a>.</sub>
 
-# gh-ai-runner
-### Use GitHub Actions as an ephemeral inference backend—straight from Python.
+# ⚡ gh-ai-runner
 
-[![PyPI](https://img.shields.io/pypi/v/gh-ai-runner?style=flat-square&logo=pypi&logoColor=white)](https://pypi.org/project/gh-ai-runner/)
-![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)
-![Models](https://img.shields.io/badge/GGUF_Models-6-7C3AED?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-D4A72C?style=flat-square)
+### Turn any GitHub repo into a serverless AI inference backend — straight from Python.
 
-[How it works](#how-it-works) · [Install](#install) · [Models](#models) · [API](#compatibility-api)
+No server. No GPU. No infrastructure. Just a token, a prompt, and GitHub's own CI runners doing the work.
+
+[![PyPI](https://img.shields.io/pypi/v/gh-ai-runner?style=flat-square&logo=pypi&logoColor=white&color=blue)](https://pypi.org/project/gh-ai-runner/)
+[![Python](https://img.shields.io/badge/python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Models](https://img.shields.io/badge/models-6-7C3AED?style=flat-square)](#-models)
+[![License](https://img.shields.io/badge/license-MIT-D4A72C?style=flat-square)](LICENSE)
+
+[Overview](#-overview) · [How it works](#-how-it-works) · [Setup](#-setup) · [Quick start](#-quick-start) · [Core concepts](#-core-concepts) · [Full API reference](#-full-api-reference) · [Recipes](#-recipes--example-snippets) · [Models](#-models) · [Security](#-security-model) · [Troubleshooting](#-troubleshooting--faq)
+
 </div>
 
 ---
 
-## Overview
+## 🧠 Overview
 
-`gh-ai-runner` is a Python orchestration package that turns a GitHub repository into an on-demand AI workload service. Version 0.3 adds concurrent batches, model comparisons, verified result checksums, and privacy-conscious local job metadata on top of the asynchronous 0.2 runtime. The original blocking `ai_call()` API remains compatible.
+`gh-ai-runner` is a Python orchestration package that turns an ordinary GitHub repository into an on-demand AI workload service. Point it at a prompt, and it provisions an ephemeral GitHub Actions runner, executes a quantized LLM with `llama-cpp-python`, and hands the result back to you — no inference server ever stays online between calls.
 
-No inference server remains online between calls. GitHub supplies the temporary runner; `llama-cpp-python` executes quantized GGUF weights on CPU.
+**Why this exists:** every GitHub account comes with a large pool of free (or cheap) Actions minutes sitting mostly idle. `gh-ai-runner` treats that compute as a disposable, on-demand inference backend: spin a runner up, load a quantized model, run inference, upload the answer as an artifact, tear the runner down. You get LLM inference without renting a GPU, running a server, or managing infrastructure — the tradeoff is latency (cold starts and model downloads take real time) in exchange for effectively free compute.
 
-## How it works
+**Version 0.3** builds on the 0.2 asynchronous runtime by adding:
+- Concurrent batch dispatch and multi-model comparisons
+- Verified, checksummed results (client- and worker-side SHA-256 digests)
+- Privacy-conscious local job metadata (a SQLite history that deliberately excludes prompts, outputs, and secrets)
+- A "bring your own provider" mode for OpenAI-compatible hosted APIs, as an alternative to local GGUF inference
+
+The original synchronous `ai_call()` function from 0.1.x is still fully supported, so upgrading doesn't break existing code.
+
+---
+
+## 🔧 How it works
+
+Every call — sync or async — follows the same underlying lifecycle:
 
 ```mermaid
 sequenceDiagram
@@ -63,25 +77,55 @@ sequenceDiagram
     API-->>App: Return output + usage + resources
 ```
 
-## Install
+Walking through each stage in more depth:
+
+1. **Identity resolution.** The client calls the GitHub API once to resolve which account the token belongs to, so it knows where to create or look for the runner repo.
+2. **Repo provisioning.** If the target repo (`ai-inference-runner` by default) doesn't exist, it's created. If it does, it's reused — nothing is torn down between calls.
+3. **Hash-based sync.** Rather than committing the workflow file and inference script on every single call, the client computes a SHA-256 of each local file and compares it against what's already committed. A commit only happens when something actually changed, which is what makes the second-and-onward calls noticeably faster than the first.
+4. **Dispatch with a correlation ID.** A `workflow_dispatch` event is fired with a randomly generated ID embedded in the run's title (`run-name`). This is the mechanism that makes concurrent jobs safe: polling later looks for an *exact* title match, not "the most recent run," so two jobs racing against each other can't get their results crossed.
+5. **Ephemeral execution.** GitHub spins up a fresh Ubuntu-based runner. It restores a cached GGUF model if one exists, or downloads it fresh from Hugging Face, then runs inference through `llama-cpp-python` entirely inside that throwaway VM.
+6. **Artifact upload.** The worker writes a structured JSON result (output text, token usage, resource stats, digests) and uploads it as a GitHub Actions artifact scoped to that specific run.
+7. **Polling and retrieval.** The client polls the Actions API for the run matching its correlation ID, waits for completion (or lets you cancel it), then downloads and parses the artifact.
+8. **Verification.** Before the result is handed back to you, the client checks the output's SHA-256 digest against what the worker reported. A mismatch means the artifact is rejected rather than silently returned.
+
+---
+
+## 📦 Setup
+
+### 1. Install the package
 
 ```bash
 pip install gh-ai-runner
 ```
 
-Requirements:
+Requires Python 3.9 or newer.
 
-- Python 3.9+
-- GitHub personal access token with repository and workflow access appropriate to the created runner repository
-- GitHub Actions enabled
+### 2. Create a GitHub personal access token
 
-## Quick start
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens**.
+2. Generate a token with **`repo`** and **`workflow`** scopes. (`repo` lets the client create/read the runner repository; `workflow` lets it commit workflow files and dispatch runs.)
+3. Store it somewhere safe — an environment variable or secret manager, **not** hardcoded in a script you might commit.
+
+```bash
+export GH_AI_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
+```
+
+### 3. Make sure Actions is enabled
+
+If you're using a brand-new account or a repo created under an organization with restrictive defaults, double check **Settings → Actions → General** allows Actions to run and artifacts to be created.
+
+That's the entire setup. Everything else — repo creation, workflow files, model downloads — is handled automatically on first use.
+
+---
+
+## 🚀 Quick start
 
 ```python
+import os
 from gh_ai_runner import ai_call
 
 answer = ai_call(
-    github_token="your-token",
+    github_token=os.environ["GH_AI_TOKEN"],
     prompt="Explain recursion with one small Python example.",
     model="qwen",
     temperature=0.2,
@@ -90,110 +134,29 @@ answer = ai_call(
 print(answer)
 ```
 
-The first call creates or configures `ai-inference-runner`. Later calls skip file commits when the embedded workflow and script hashes match their remote contents.
+On the very first call, `gh-ai-runner` will create the `ai-inference-runner` repo, commit the embedded workflow and inference script, and download/cache the chosen model on the runner. Every call after that reuses the repo and skips re-committing files whose hashes haven't changed.
 
-## Asynchronous jobs
+---
 
-`submit()` returns after dispatch instead of waiting for the model. Each job has a stable ID; retries use distinct correlation IDs such as `<job-id>-1` and `<job-id>-2`.
+## 🧩 Core concepts
 
-```python
-from gh_ai_runner import GitHubAIRunner, JobStatus, RetryPolicy
+| Concept | What it is |
+|---|---|
+| **`ai_call()`** | The simplest entry point — synchronous, blocking, returns a plain string. Best for one-off scripts. |
+| **`GitHubAIRunner`** | The stateful client. Use this when you need async jobs, batches, comparisons, or a custom provider. |
+| **`Job`** | A handle to a single dispatched inference request. Supports `refresh()`, `wait()`, `result()`, `cancel()`. |
+| **`BatchJob`** | A handle to a group of jobs dispatched together, sharing a `batch_id`. |
+| **`InferenceRequest`** | A single prompt + model (+ optional parameters), used when building a batch. |
+| **`InferenceResult`** | The parsed, verified output of a completed job: `.output`, `.usage`, `.resources`. |
+| **`RetryPolicy`** | Configuration for how many times, and how, a job should retry on failure. |
+| **`JobStatus`** | An enum describing where a job currently is in its lifecycle. |
+| **`ProviderConfig`** | Configuration for routing inference to a hosted, OpenAI-compatible API instead of local GGUF. |
 
-runner = GitHubAIRunner(github_token="your-token")
-job = runner.submit(
-    "Summarize the tradeoffs of SQLite and PostgreSQL.",
-    model="qwen",
-    retry_policy=RetryPolicy(max_retries=1),
-)
+---
 
-print(job.job_id, job.refresh())
-result = job.result(timeout=900)
-print(result.output)
-print(result.usage.total_tokens)
-print(result.resources.memory_total_bytes)
-```
+## 📖 Full API reference
 
-`job.refresh()` is non-blocking. `job.wait()` blocks until completion, `job.result()` downloads and parses the structured result, and `job.cancel()` requests cancellation through GitHub's Actions API. A handle can be reconstructed later with `runner.get_job(job_id, attempt=1)`.
-
-Multiple jobs can safely share one runner repository. Correlation is based on an exact workflow run title and a uniquely named artifact, rather than whichever unseen run appears first.
-
-## Bring your own provider key
-
-Version 0.2 supports OpenAI-compatible HTTPS providers. The key is encrypted locally with the repository's GitHub public key and stored only in the dedicated `GH_AI_PROVIDER_API_KEY` Actions secret. It is never sent through workflow inputs or written to result artifacts.
-
-```python
-from gh_ai_runner import GitHubAIRunner, ProviderConfig
-
-runner = GitHubAIRunner("your-github-token")
-groq = ProviderConfig.groq("llama-3.3-70b-versatile")
-
-runner.configure_provider(groq, api_key="your-provider-key")
-result = runner.submit("Explain B-trees.", provider=groq).result()
-print(result.output, result.usage)
-```
-
-There is one dedicated provider-key slot per runner repository in 0.2. Calling `configure_provider()` again rotates that key. Custom OpenAI-compatible endpoints use `ProviderConfig(name, model, base_url)`; `base_url` must use HTTPS.
-
-## Batches and model comparisons
-
-Batch requests are dispatched independently, then polled concurrently:
-
-```python
-from gh_ai_runner import GitHubAIRunner, InferenceRequest
-
-runner = GitHubAIRunner("your-github-token")
-batch = runner.submit_batch([
-    InferenceRequest("Summarize this release note.", model="tinyllama"),
-    InferenceRequest("Write three test cases.", model="qwen"),
-])
-
-for result in batch.results(timeout=900):
-    print(result.model, result.output)
-```
-
-Use `compare()` to send one prompt to several distinct local models:
-
-```python
-comparison = runner.compare(
-    "Explain optimistic concurrency control.",
-    models=["tinyllama", "qwen", "phi3"],
-    max_tokens=300,
-)
-
-for model, result in comparison.results_by_model().items():
-    print(model, result.output, result.usage.total_tokens)
-```
-
-`BatchJob.refresh()`, `wait()`, `results()`, and `cancel()` operate across the complete group while preserving request order. Every group receives a stable `batch_id`, which is also attached to its jobs and persistent metadata records.
-
-## Integrity and persistent metadata
-
-The client and worker independently calculate a SHA-256 digest of the normalized request. The worker also hashes the generated output. The client rejects an artifact when its job identity, request digest, output digest, or algorithm does not match.
-
-Job metadata is stored by default in `~/.gh_ai_runner/jobs.sqlite3`. It includes job/correlation IDs, attempts, status, model, provider, run ID, timestamps, token counts, duration, and SHA-256 digests. GitHub tokens, provider keys, prompt text, system text, and output text are never stored in this database.
-
-```python
-recent = runner.list_jobs(limit=20)
-resumed = runner.resume(recent[0].job_id)
-print(resumed.refresh())
-```
-
-Pass `metadata_path=None` to disable persistence or supply a custom database path.
-
-## Models
-
-| Key | Model | GGUF size | Default context | Good fit |
-|---|---|---:|---:|---|
-| `tinyllama` | TinyLlama 1.1B Chat | 0.6 GB | 2,048 | Fast basic answers |
-| `llama` | Llama 3.2 1B Instruct | 0.7 GB | 4,096 | General instructions |
-| `phi3` | Phi-3.5 Mini Instruct | 2.2 GB | 4,096 | Stronger reasoning |
-| `qwen` | Qwen 2.5 1.5B Instruct | 1.0 GB | 4,096 | Code and math |
-| `gemma2` | Gemma 2 2B Instruct | 1.6 GB | 4,096 | Chat/instructions |
-| `deepseek` | DeepSeek-R1 1.5B | 1.1 GB | 4,096 | Deliberative reasoning |
-
-Validation caps context at 8,192, generated tokens at 4,096, and temperature between 0 and 2. The package estimates memory from model size plus extra context before dispatch.
-
-## Compatibility API
+### `ai_call()` — the synchronous one-liner
 
 ```python
 ai_call(
@@ -210,11 +173,312 @@ ai_call(
 ) -> str
 ```
 
-The function internally creates a client, submits a job, waits, and returns `InferenceResult.output` as a string.
+| Parameter | Type | Default | Notes |
+|---|---|---|---|
+| `github_token` | `str` | — | **Required.** Needs `repo` + `workflow` scopes. |
+| `prompt` | `str` | — | **Required.** The user message sent to the model. |
+| `model` | `str` | `"tinyllama"` | One of the keys in the [models table](#-models). |
+| `system` | `str` | `"You are a helpful assistant."` | System prompt controlling behavior/persona. |
+| `max_tokens` | `int` | `512` | Hard-capped at `4096` by validation. |
+| `temperature` | `float` | `0.7` | Range `0.0`–`2.0`. `0.0` = deterministic. |
+| `cache` | `bool` | `True` | Keeps model weights cached on the runner between runs. |
+| `n_ctx` | `int \| None` | `None` (model default) | Context window size, capped at `8192`. |
+| `repo_name` | `str` | `"ai-inference-runner"` | Which repo to create/reuse — useful for isolating concurrent workloads. |
+| `verbose` | `bool` | `True` | Prints step-by-step progress logs. |
 
-## Package architecture
+Internally this is a thin wrapper: it builds a `GitHubAIRunner`, calls `.submit()`, blocks on `.result()`, and returns just the `.output` string.
 
-```text
+### `GitHubAIRunner` — the stateful client
+
+```python
+runner = GitHubAIRunner(github_token: str, repo_name: str = "ai-inference-runner")
+```
+
+Key methods:
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `submit(prompt, **kwargs)` | `Job` | Dispatches a single request without blocking. |
+| `submit_batch(requests: list[InferenceRequest])` | `BatchJob` | Dispatches several requests as one tracked group. |
+| `compare(prompt, models: list[str], **kwargs)` | `ComparisonJob` | Sends one prompt to multiple models for side-by-side results. |
+| `configure_provider(config: ProviderConfig, api_key: str)` | `None` | Encrypts and stores a hosted-provider API key as a repo secret. |
+| `list_jobs(limit: int = 20)` | `list[JobRecord]` | Reads recent job history from local metadata. |
+| `get_job(job_id, attempt=1)` | `Job` | Reconstructs a handle to a previously submitted job. |
+| `resume(job_id)` | `Job` | Alias/helper for picking a job back up after a script restart. |
+
+### `Job` — a single async handle
+
+| Method | Blocking? | Purpose |
+|---|---|---|
+| `.refresh()` | No | Checks current status without waiting. |
+| `.wait(timeout=None)` | Yes | Blocks until the job finishes or the timeout elapses. |
+| `.result(timeout=None)` | Yes | Waits if necessary, then downloads + verifies + parses the artifact into an `InferenceResult`. |
+| `.cancel()` | No | Requests cancellation through the Actions API. |
+
+### `RetryPolicy`
+
+```python
+RetryPolicy(max_retries: int = 0, ...)
+```
+Controls automatic retry behavior on failed dispatch or timeout. Retries reuse the same `job_id` but get distinct correlation IDs (e.g. `<job-id>-1`, `<job-id>-2`), so history stays traceable across attempts.
+
+### `ProviderConfig`
+
+```python
+ProviderConfig.groq(model: str)          # convenience constructor for Groq
+ProviderConfig(name, model, base_url)    # generic OpenAI-compatible endpoint (HTTPS only)
+```
+
+### `InferenceRequest` / `InferenceResult`
+
+`InferenceRequest(prompt: str, model: str = "tinyllama", **kwargs)` is the unit you pass into `submit_batch()`. `InferenceResult` is what comes back from `.result()`, exposing `.output` (str), `.usage` (token counts), and `.resources` (CPU/memory/disk/duration stats reported by the worker).
+
+---
+
+## 🍳 Recipes / example snippets
+
+### Basic blocking call
+
+```python
+from gh_ai_runner import ai_call
+
+result = ai_call(
+    github_token="ghp_...",
+    prompt="What's the difference between a list and a tuple in Python?",
+)
+print(result)
+```
+
+### Custom persona + longer output
+
+```python
+result = ai_call(
+    github_token="ghp_...",
+    prompt="Explain black holes",
+    system="You are a physics professor. Be precise and use analogies.",
+    model="llama",
+    max_tokens=1024,
+)
+print(result)
+```
+
+### Deterministic output for reproducible tests
+
+```python
+result = ai_call(
+    github_token="ghp_...",
+    prompt="What is 144 divided by 12?",
+    temperature=0.0,
+    max_tokens=16,
+)
+assert "12" in result
+```
+
+### Silent mode (no progress logs, e.g. inside another CLI tool)
+
+```python
+result = ai_call(
+    github_token="ghp_...",
+    prompt="Summarize the theory of evolution in two sentences.",
+    verbose=False,
+)
+```
+
+### Async submit + manual polling loop
+
+```python
+from gh_ai_runner import GitHubAIRunner, RetryPolicy
+import time
+
+runner = GitHubAIRunner(github_token="ghp_...")
+job = runner.submit(
+    "Summarize the tradeoffs of SQLite vs. PostgreSQL.",
+    model="qwen",
+    retry_policy=RetryPolicy(max_retries=1),
+)
+
+while True:
+    status = job.refresh()
+    print(f"job {job.job_id}: {status}")
+    if status.is_terminal:          # adjust to however JobStatus exposes this
+        break
+    time.sleep(5)
+
+result = job.result(timeout=900)
+print(result.output)
+print("tokens:", result.usage.total_tokens)
+print("peak memory:", result.resources.memory_total_bytes)
+```
+
+### Error handling around a job
+
+```python
+from gh_ai_runner import GitHubAIRunner
+
+runner = GitHubAIRunner(github_token="ghp_...")
+
+try:
+    job = runner.submit("Write three pytest test cases for a stack class.", model="qwen")
+    result = job.result(timeout=600)
+    print(result.output)
+except TimeoutError:
+    print(f"Job {job.job_id} didn't finish in time — cancelling.")
+    job.cancel()
+except Exception as e:
+    # Covers dispatch failures, digest-mismatch rejections, and API errors.
+    print(f"Job failed: {e}")
+```
+
+### Batch dispatch across different models
+
+```python
+from gh_ai_runner import GitHubAIRunner, InferenceRequest
+
+runner = GitHubAIRunner("ghp_...")
+batch = runner.submit_batch([
+    InferenceRequest("Summarize this release note.", model="tinyllama"),
+    InferenceRequest("Write three test cases.", model="qwen"),
+    InferenceRequest("Explain this stack trace.", model="phi3"),
+])
+
+for result in batch.results(timeout=900):
+    print(f"[{result.model}] {result.output}\n")
+```
+
+### Head-to-head model comparison
+
+```python
+comparison = runner.compare(
+    "Explain optimistic concurrency control.",
+    models=["tinyllama", "qwen", "phi3"],
+    max_tokens=300,
+)
+
+for model, result in comparison.results_by_model().items():
+    print(f"--- {model} ({result.usage.total_tokens} tokens) ---")
+    print(result.output)
+```
+
+### Parallel calls using isolated repos
+
+Because correlation is per-repo, truly parallel workloads should use **separate repo names** to get independent run queues:
+
+```python
+import threading
+from gh_ai_runner import ai_call
+
+TOKEN = "ghp_..."
+results = {}
+
+def run(key, prompt, repo):
+    results[key] = ai_call(
+        github_token=TOKEN,
+        prompt=prompt,
+        repo_name=repo,
+        verbose=False,
+    )
+
+t1 = threading.Thread(target=run, args=("q1", "Explain DNA replication.", "runner-repo-1"))
+t2 = threading.Thread(target=run, args=("q2", "Explain RNA splicing.", "runner-repo-2"))
+
+t1.start(); t2.start()
+t1.join();  t2.join()
+
+print(results["q1"])
+print(results["q2"])
+```
+
+### Bringing your own hosted model (Groq example)
+
+```python
+from gh_ai_runner import GitHubAIRunner, ProviderConfig
+
+runner = GitHubAIRunner("ghp_...")
+groq = ProviderConfig.groq("llama-3.3-70b-versatile")
+
+runner.configure_provider(groq, api_key="gsk_...")
+result = runner.submit("Explain B-trees.", provider=groq).result()
+print(result.output, result.usage)
+```
+
+### Bringing your own hosted model (generic OpenAI-compatible endpoint)
+
+```python
+from gh_ai_runner import GitHubAIRunner, ProviderConfig
+
+runner = GitHubAIRunner("ghp_...")
+custom = ProviderConfig(
+    name="my-endpoint",
+    model="some-model-id",
+    base_url="https://my-inference-host.example.com/v1",   # must be HTTPS
+)
+
+runner.configure_provider(custom, api_key="sk-...")
+result = runner.submit("Draft a haiku about compilers.", provider=custom).result()
+print(result.output)
+```
+
+> Calling `configure_provider()` again **rotates** the previously stored key — there's one provider-key slot per runner repo.
+
+### Resuming and inspecting job history
+
+```python
+runner = GitHubAIRunner("ghp_...")
+
+recent = runner.list_jobs(limit=20)
+for record in recent:
+    print(record.job_id, record.status, record.model, record.duration)
+
+resumed = runner.resume(recent[0].job_id)
+print(resumed.refresh())
+```
+
+### Disabling persistent metadata
+
+```python
+# Nothing gets written to ~/.gh_ai_runner/jobs.sqlite3
+runner = GitHubAIRunner("ghp_...", metadata_path=None)
+
+# Or point it at a custom location, e.g. for a shared/team setup
+runner = GitHubAIRunner("ghp_...", metadata_path="/var/data/gh_ai_runner/jobs.sqlite3")
+```
+
+---
+
+## 🤖 Models
+
+| Key | Model | GGUF size | Default context | Good fit |
+|---|---|---|---|---|
+| `tinyllama` | TinyLlama 1.1B Chat | 0.6 GB | 2,048 | Fast, low-latency answers where quality matters less than speed. |
+| `llama` | Llama 3.2 1B Instruct | 0.7 GB | 4,096 | General-purpose instruction following. |
+| `phi3` | Phi-3.5 Mini Instruct | 2.2 GB | 4,096 | The strongest reasoning of the set — costs more download/cold-start time. |
+| `qwen` | Qwen 2.5 1.5B Instruct | 1.0 GB | 4,096 | Code generation and math-heavy prompts. |
+| `gemma2` | Gemma 2 2B Instruct | 1.6 GB | 4,096 | Balanced chat/instruction quality. |
+| `deepseek` | DeepSeek-R1 1.5B | 1.1 GB | 4,096 | Step-by-step, deliberative reasoning chains. |
+
+**Choosing a model in practice:**
+- Prototyping or a smoke test → `tinyllama` (fastest cold start).
+- General assistant behavior → `llama` or `gemma2`.
+- Anything code- or math-adjacent → `qwen`.
+- A task that benefits from visible step-by-step reasoning → `deepseek`.
+- When quality matters more than speed and you can tolerate a bigger download → `phi3`.
+
+**Limits enforced by validation, regardless of model:** context window ≤ 8,192 tokens, generated output ≤ 4,096 tokens, temperature within `0.0`–`2.0`. The package also estimates required memory from model size plus requested context *before* dispatching, so a job that would obviously exceed the runner's resources fails fast locally instead of burning a full CI run.
+
+---
+
+## 🔒 Security model
+
+- **Tokens** are supplied by the caller at runtime and should live in a secret store or environment variable — never hardcoded in source you might commit.
+- **Provider API keys** (for the bring-your-own-provider mode) are encrypted client-side using the target repo's GitHub public key (a "sealed box"), then stored only as the `GH_AI_PROVIDER_API_KEY` Actions secret. They are never passed through workflow inputs and never written into any result artifact.
+- **Result integrity** is enforced two ways: the client computes a SHA-256 digest of the normalized request before dispatch, and the worker computes a digest of the generated output. If job identity, request digest, output digest, or algorithm don't line up on return, the artifact is rejected rather than trusted.
+- **Local job metadata** (`~/.gh_ai_runner/jobs.sqlite3` by default) intentionally excludes prompt text, system text, output text, GitHub tokens, and provider keys — only structural metadata (IDs, status, model, timestamps, token counts, digests) is persisted.
+
+---
+
+## 🏗️ Package architecture
+
+```
 gh_ai_runner/
 ├── client.py       asynchronous client and secure provider setup
 ├── job.py          status, waiting, retry, result, and cancellation handle
@@ -232,31 +496,33 @@ gh_ai_runner/
 └── logger.py       elapsed-time progress reporting
 ```
 
-## Engineering notes
+---
 
-- Remote file SHA-256 comparison eliminates unnecessary commits and workflow registration churn.
-- A random job ID is included in `run-name`; polling requires an exact title match.
-- Retry attempts keep a stable job ID and receive distinct correlation IDs.
-- The worker reports CPU, memory, disk, peak RSS, duration, and model token usage.
-- Local inference automatically assigns CPU threads from the detected runner resources.
-- Provider secrets use GitHub sealed-box encryption and a dedicated secret slot.
-- Batch result waiting is concurrent and preserves submission order.
-- Result identity and SHA-256 checksums are verified before returning output.
-- Persistent metadata intentionally excludes prompt, system, output, and secret values.
-- The package adds a concise/direct instruction to the supplied system prompt.
-- GitHub-hosted CPU inference has meaningful cold-start and generation latency; caches are best-effort.
-- Tokens are passed by the caller and should come from a secret store—not source code.
-- The repository declares version `0.3.0` in both package metadata and the public module.
-- Distribution archives are checked into `dist/`; releases are a cleaner long-term channel.
+## 🩺 Troubleshooting / FAQ
 
-## Skills demonstrated
+**"My token doesn't work / 403 errors on dispatch."**
+Double check the token has both `repo` and `workflow` scopes — `repo` alone isn't enough to commit workflow files or trigger `workflow_dispatch`.
+
+**"The first call is really slow."**
+Expected — it's creating the repo, committing the workflow and script, and cold-downloading the model on a fresh runner. Every call afterward skips the redundant commits and can reuse the cached model, so latency drops substantially.
+
+**"Two jobs I ran around the same time seem to have swapped results."**
+This shouldn't happen given the correlation-ID + exact-title-match polling design — if you see it, check whether both jobs were dispatched to the *same* `repo_name` with manually reused job IDs. For genuinely parallel workloads, use separate `repo_name`s (see the parallel-calls recipe above).
+
+**"A job times out but I don't know if it's still running on GitHub."**
+Call `.refresh()` on the job handle to check status without blocking, and `.cancel()` if you want to stop it via the Actions API rather than just abandoning the local handle.
+
+**"I don't want any local history kept."**
+Pass `metadata_path=None` when constructing `GitHubAIRunner` to disable the local SQLite metadata store entirely.
+
+---
+
+## 🎯 Skills demonstrated
 
 Python package design · REST orchestration · CI as compute · idempotent provisioning · content hashing · polling/event correlation · artifact retrieval · resource validation · open-model deployment
 
-## Resume-ready highlight
+---
 
-> Published a Python orchestration package that provisions and synchronizes GitHub-hosted inference workers, dispatches one of six quantized models, correlates workflow runs, retrieves artifacts, and exposes the entire lifecycle as one typed function call.
+## 📄 License
 
-## License
-
-MIT
+MIT © [Tanish Chauhan](https://github.com/TanishC4444)
